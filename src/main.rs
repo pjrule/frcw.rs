@@ -1,3 +1,7 @@
+extern crate jemallocator;
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 extern crate clap;
 extern crate rand;
 extern crate serde_json;
@@ -7,11 +11,14 @@ use rand::{Rng, SeedableRng};
 use serde_json::Result as SerdeResult;
 use serde_json::Value;
 use std::cmp::{max, min};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::fs;
-use std::iter::FromIterator;
 use std::result::Result;
 use std::boxed::Box;
+use std::num::Wrapping;
+
+
+type MST = Vec<Vec<usize>>;
 
 #[derive(Clone, Hash, Eq, PartialEq)]
 struct Edge(usize, usize);
@@ -24,7 +31,7 @@ struct Node {
 struct Graph {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
-    src_dst: HashMap<Edge, usize>,
+    edges_start: Vec<usize>,
     total_pop: u32,
 }
 
@@ -71,7 +78,6 @@ impl Default for ChainState {
     }
 }
 
-type MST = HashMap<usize, Vec<usize>>;
 
 fn from_networkx(
     path: &str,
@@ -87,9 +93,10 @@ fn from_networkx(
     let mut nodes = Vec::<Node>::with_capacity(num_nodes);
     let mut assignments = Vec::<u32>::with_capacity(num_nodes);
     let mut edges = Vec::<Edge>::new();
-    let mut src_dst = HashMap::<Edge, usize>::new();
+    let mut edges_start = vec![0 as usize; num_nodes];
 
     for (index, (node, adj)) in raw_nodes.iter().zip(raw_adj.iter()).enumerate() {
+        edges_start[index] = edges.len();
         let neighbors: Vec<usize> = adj
             .as_array()
             .unwrap()
@@ -106,7 +113,6 @@ fn from_networkx(
             if neighbor > &index {
                 let edge = Edge(index, *neighbor);
                 edges.push(edge.clone());
-                src_dst.insert(edge.clone(), edges.len() - 1);
             }
         }
     }
@@ -139,7 +145,7 @@ fn from_networkx(
     let graph = Graph {
         nodes: nodes,
         edges: edges.clone(),
-        src_dst: src_dst.clone(),
+        edges_start: edges_start.clone(),
         total_pop: total_pop,
     };
     let partition = Partition {
@@ -155,16 +161,19 @@ fn from_networkx(
 
 impl RecomProposal {
     pub fn seam_length(&self, graph: &Graph) -> usize {
-        let a_nodes: HashSet<usize> = HashSet::from_iter(self.a_nodes.iter().cloned());
-        let b_nodes: HashSet<usize> = HashSet::from_iter(self.b_nodes.iter().cloned());
-        return graph
-            .edges
-            .iter()
-            .filter(|e| {
-                (a_nodes.contains(&e.0) && b_nodes.contains(&e.1))
-                    || (a_nodes.contains(&e.1) && b_nodes.contains(&e.0))
-            })
-            .count();
+        let mut a_mask = vec![false; graph.nodes.len()];
+        for &node in self.a_nodes.iter() {
+            a_mask[node] = true;
+        }
+        let mut seam = 0;
+        for &node in self.b_nodes.iter() {
+            for &neighbor in graph.nodes[node].neighbors.iter() {
+                if a_mask[neighbor] {
+                    seam += 1;
+                }
+            }
+        }
+        return seam;
     }
 }
 
@@ -198,6 +207,42 @@ impl Partition {
         self.dist_adj = dist_adj;
         self.cut_edges = cut_edges;
     }
+    pub fn subgraph(&self, graph: &Graph, a: usize, b: usize) -> (Box<Graph>, Box<Vec<usize>>) {
+        let raw_nodes: Vec<usize> = self.dist_nodes[a]
+            .iter()
+            .cloned()
+            .chain(self.dist_nodes[b].iter().cloned())
+            .collect();
+        let n = raw_nodes.len();
+        let mut node_to_idx = vec![-1 as i64; graph.nodes.len()];
+        let mut nodes = Vec::<Node>::with_capacity(n);
+        let mut edges = Vec::<Edge>::with_capacity(3 * n);
+        let mut edges_start = vec![0 as usize; n];
+        for (idx, &node) in raw_nodes.iter().enumerate() {
+            node_to_idx[node] = idx as i64;
+        }
+        for (idx, &node) in raw_nodes.iter().enumerate() {
+            edges_start[idx] = edges.len();
+            let mut neighbors = Vec::<usize>::new();
+            for &neighbor in graph.nodes[node].neighbors.iter() {
+                if node_to_idx[neighbor] >= 0 {
+                    let neighbor_idx = node_to_idx[neighbor] as usize;
+                    neighbors.push(neighbor_idx as usize);
+                    if neighbor_idx > idx as usize {
+                        edges.push(Edge(idx, neighbor_idx as usize));
+                    }
+                }
+            }
+            nodes.push(Node { pop: graph.nodes[node].pop, neighbors: neighbors });
+        }
+        let graph = Graph {
+            nodes: nodes,
+            edges: edges,
+            edges_start: edges_start,
+            total_pop: self.dist_pops[a] + self.dist_pops[b]
+        };
+        return (Box::new(graph), Box::new(raw_nodes));
+    }
     pub fn invariants(&self) -> bool {
         return self.contiguous() && self.pops_in_tolerance() && self.consec_labels();
     }
@@ -215,29 +260,22 @@ impl Partition {
     }
 }
 
-fn random_spanning_tree(
-    graph: &Graph,
-    partition: &Partition,
-    rng: &mut SmallRng,
-    a: usize,
-    b: usize,
-) -> Box<MST> {
-    let subgraph: Vec<usize> = partition.dist_nodes[a]
-        .iter()
-        .cloned()
-        .chain(partition.dist_nodes[b].iter().cloned())
-        .collect();
-    let n = subgraph.len();
-    let mut node_to_idx = HashMap::<usize, usize>::with_capacity(n);
-    let mut node_idx = 0;
-    let mut in_union = vec![false; graph.nodes.len()];
-    for &node in subgraph.iter() {
-        node_to_idx.insert(node, node_idx);
-        assert!(node < in_union.len());
-        in_union[node] = true;
-        node_idx += 1;
+fn rand_in_range(rng: &mut SmallRng, ub: u32) -> u32 {
+    // https://www.pcg-random.org/posts/bounded-rands.html
+    let mut t = (Wrapping(0) - Wrapping(ub)).0 % ub;
+    let mut x = rng.gen::<u32>();
+    let mut m = (x as u64) * (ub as u64);
+    let mut l = m as u32;
+    while l < t {
+        x = rng.gen::<u32>();
+        m = (x as u64) * (ub as u64);
+        l = Wrapping(m).0 as u32;
     }
+    return Wrapping(m >> 32).0 as u32;
+}
 
+fn random_spanning_tree(graph: &Graph, rng: &mut SmallRng) -> Box<MST> {
+    let n = graph.nodes.len();
     let mut in_tree = vec![false; n];
     let mut next = vec![-1 as i64; n];
     let root = rng.gen_range(0..n);
@@ -245,91 +283,80 @@ fn random_spanning_tree(
     for i in 0..n {
         let mut u = i;
         while !in_tree[u] {
-            let neighbors = &graph.nodes[subgraph[u]].neighbors;
-            let mut neighbor = neighbors[rng.gen_range(0..neighbors.len())];
-            while !in_union[neighbor] {
-                neighbor = neighbors[rng.gen_range(0..neighbors.len())];
-            }
-            let next_idx = node_to_idx[&neighbor];
-            next[u] = next_idx as i64;
-            u = next_idx;
+            let neighbors = &graph.nodes[u].neighbors;
+            let neighbor = neighbors[rand_in_range(rng, neighbors.len() as u32) as usize];
+            next[u] = neighbor as i64;
+            u = neighbor;
         }
         u = i;
         while !in_tree[u] {
             in_tree[u] = true;
-            assert!(next[u] >= 0);
             u = next[u] as usize;
         }
     }
 
     let mut mst_edges = Vec::<usize>::with_capacity(n - 1);
-    for (curr, &next) in next.iter().enumerate() {
-        if next >= 0 {
-            let a = subgraph[curr];
-            let b = subgraph[next as usize];
-            mst_edges.push(graph.src_dst[&Edge(min(a, b), max(a, b))]);
+    for (curr, &prev) in next.iter().enumerate() {
+        if prev >= 0 {
+            let a = min(curr, prev as usize);
+            let b = max(curr, prev as usize);
+            let mut edge_idx = graph.edges_start[a];
+            while graph.edges[edge_idx].0 == a {
+                if graph.edges[edge_idx].1 == b {
+                    mst_edges.push(edge_idx);
+                    break;
+                }
+                edge_idx += 1;
+            }
         }
     }
     assert!(mst_edges.len() == n - 1);
 
-    let mut mst = HashMap::<usize, Vec<usize>>::with_capacity(n);
-    for &node in subgraph.iter() {
-        mst.insert(node, Vec::<usize>::new());
-    }
+    let mut mst = vec![Vec::<usize>::new(); n];
     for &edge in mst_edges.iter() {
         let Edge(src, dst) = graph.edges[edge];
-        mst.get_mut(&src).unwrap().push(dst);
-        mst.get_mut(&dst).unwrap().push(src);
+        mst[src].push(dst);
+        mst[dst].push(src);
     }
     return Box::new(mst);
 }
 
 fn random_split(
-    graph: &Graph,
+    subgraph: &Graph,
     partition: &Partition,
     rng: &mut SmallRng,
     mst: &MST,
     a: usize,
     b: usize,
+    subgraph_map: &Vec<usize>,
     params: ChainParams,
 ) -> Result<Box<RecomProposal>, String> {
-    let subgraph: Vec<usize> = mst.keys().cloned().collect();
-    let is_leaf: Vec<bool> = subgraph
-        .iter()
-        .map(|&node| graph.nodes[node].neighbors.len() == 1)
-        .collect();
-    let n = subgraph.len();
-    let non_leaf = (0..n).find(|&i| !is_leaf[i]);
-    if non_leaf.is_none() {
+    let n = subgraph.nodes.len();
+    let mut root = 0;
+    while root < n {
+        if subgraph.nodes[root].neighbors.len() > 1 {
+            break;
+        }
+        root += 1;
+    }
+    if root == n {
         return Err("no leaf nodes in MST".to_string());
     }
-    let root = non_leaf.unwrap();
-    let mut node_to_idx = HashMap::<usize, usize>::with_capacity(n);
-    for (idx, &node) in subgraph.iter().enumerate() {
-        node_to_idx.insert(node, idx);
-    }
-    let pops: Vec<u32> = subgraph.iter().map(|&node| graph.nodes[node].pop).collect();
-    let subgraph_pop = partition.dist_pops[a] + partition.dist_pops[b];
-
     // Traverse the MST.
     let mut visited = vec![false; n];
     let mut pred = vec![0; n];
-    let mut succ = HashMap::<usize, Vec<usize>>::with_capacity(n);
+    let mut succ = vec![Vec::<usize>::new(); n];
     let mut queue = VecDeque::<usize>::with_capacity(n);
     queue.push_back(root);
     while let Some(next) = queue.pop_front() {
         visited[next] = true;
-        let mut node_succ =
-            Vec::<usize>::with_capacity(graph.nodes[subgraph[next]].neighbors.len());
-        for &neighbor in mst[&subgraph[next]].iter() {
-            let neighbor_idx = node_to_idx[&neighbor];
-            if !visited[neighbor_idx] {
-                queue.push_back(neighbor_idx);
-                node_succ.push(neighbor_idx);
-                pred[neighbor_idx] = next;
+        for &neighbor in mst[next].iter() {
+            if !visited[neighbor] {
+                queue.push_back(neighbor);
+                succ[next].push(neighbor);
+                pred[neighbor] = next;
             }
         }
-        succ.insert(next, node_succ);
     }
 
     // Recursively compute populations of subtrees.
@@ -339,19 +366,19 @@ fn random_split(
     stack.push(root);
     while let Some(next) = stack.pop() {
         if !pop_found[next] {
-            if is_leaf[next] {
-                tree_pops[next] = pops[next];
+            if subgraph.nodes[next].neighbors.len() == 1 {
+                tree_pops[next] = subgraph.nodes[next].pop;
                 pop_found[next] = true;
             } else {
                 // Populations of all child nodes found. :)
-                if succ[&next].iter().all(|&node| pop_found[node]) {
-                    tree_pops[next] = succ[&next].iter().map(|&node| tree_pops[node]).sum();
-                    tree_pops[next] += pops[next];
+                if succ[next].iter().all(|&node| pop_found[node]) {
+                    tree_pops[next] = succ[next].iter().map(|&node| tree_pops[node]).sum();
+                    tree_pops[next] += subgraph.nodes[next].pop;
                     pop_found[next] = true;
                 } else {
                     // Come back later.
                     stack.push(next);
-                    for &neighbor in succ[&next].iter() {
+                    for &neighbor in succ[next].iter() {
                         if !pop_found[neighbor] {
                             stack.push(neighbor);
                         }
@@ -366,8 +393,8 @@ fn random_split(
     for (index, &pop) in tree_pops.iter().enumerate() {
         if pop >= params.min_pop
             && pop <= params.max_pop
-            && subgraph_pop - pop >= params.min_pop
-            && subgraph_pop - pop <= params.max_pop
+            && subgraph.total_pop - pop >= params.min_pop
+            && subgraph.total_pop - pop <= params.max_pop
         {
             balance_nodes.push(index);
         }
@@ -390,29 +417,27 @@ fn random_split(
     let mut in_a = vec![false; n];
     while let Some(next) = queue.pop_front() {
         if !in_a[next] {
-            a_nodes.push(subgraph[next]);
-            a_pop += pops[next];
+            a_nodes.push(next);
+            a_pop += subgraph.nodes[next].pop;
             in_a[next] = true;
-            if succ.contains_key(&next) {
-                for &node in succ[&next].iter() {
-                    queue.push_back(node);
-                }
+            for &node in succ[next].iter() {
+                queue.push_back(node);
             }
         }
     }
     let mut b_nodes = Vec::<usize>::with_capacity(n - a_nodes.len());
     for (index, &e) in in_a.iter().enumerate() {
         if !e {
-            b_nodes.push(subgraph[index]);
+            b_nodes.push(index);
         }
     }
     return Ok(Box::new(RecomProposal {
         a_label: a,
         b_label: b,
-        a_nodes: a_nodes,
-        b_nodes: b_nodes,
+        a_nodes: a_nodes.iter().map(|&n| subgraph_map[n]).collect(),
+        b_nodes: b_nodes.iter().map(|&n| subgraph_map[n]).collect(),
         a_pop: a_pop,
-        b_pop: subgraph_pop - a_pop,
+        b_pop: subgraph.total_pop - a_pop,
     }));
 }
 
@@ -422,7 +447,7 @@ fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
     while step <= params.num_steps {
         step += 1;
-        println!("step {}", step);
+        //println!("step {}", step);
         // Step 1: randomly sample from the n^2 district pairs.
         let dist_a = rng.gen_range(0..partition.num_dists) as usize;
         let dist_b = rng.gen_range(0..partition.num_dists) as usize;
@@ -430,11 +455,12 @@ fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
             state.non_adjacent += 1; // Self-loop.
             continue;
         }
+        let (subgraph, subgraph_map) = partition.subgraph(graph, dist_a, dist_b);
         // Step 2: draw a random spanning tree of the subgraph induced by the
         // two districts.
-        let mst = random_spanning_tree(graph, partition, &mut rng, dist_a, dist_b);
+        let mst = random_spanning_tree(&subgraph, &mut rng);
         // Step 3: choose a random balance edge, if possible.
-        let split = random_split(graph, partition, &mut rng, &mst, dist_a, dist_b, params);
+        let split = random_split(&subgraph, partition, &mut rng, &mst, dist_a, dist_b, &subgraph_map, params);
         match split {
             Ok(proposal) => {
                 // Step 4: accept with probability 1 / (M * seam length)
