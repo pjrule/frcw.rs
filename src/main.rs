@@ -479,7 +479,7 @@ fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
 }
 
 fn main() {
-    let matches = App::new("revrecom")
+    let matches = App::new("frcw")
         .version("0.1.0")
         .author("Parker J. Rule <parker.rule@tufts.edu>")
         .about("A minimal implementation of the reversible ReCom Markov chain")

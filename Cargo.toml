@@ -1,5 +1,5 @@
 [package]
-name = "recom-rust"
+name = "frcw"
 version = "0.1.0"
 authors = ["Parker J. Rule <parker.rule@tufts.edu>"]
 edition = "2018"
