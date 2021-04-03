@@ -14,7 +14,6 @@ use std::cmp::{max, min};
 use std::collections::VecDeque;
 use std::fs;
 use std::result::Result;
-use std::boxed::Box;
 use std::num::Wrapping;
 
 
@@ -155,8 +154,25 @@ fn from_networkx(
 }
 
 impl RecomProposal {
+    pub fn new_buffer(n: usize) -> RecomProposal {
+        return RecomProposal {
+            a_label: 0,
+            b_label: 0,
+            a_pop: 0,
+            b_pop: 0,
+            a_nodes: Vec::<usize>::with_capacity(n),
+            b_nodes: Vec::<usize>::with_capacity(n)
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.a_nodes.clear();
+        self.b_nodes.clear();
+        // TODO: reset integer fields?
+    }
+
     pub fn seam_length(&self, graph: &Graph) -> usize {
-        let mut a_mask = vec![false; graph.neighbors.len()];
+        let mut a_mask = vec![false; graph.pops.len()];
         for &node in self.a_nodes.iter() {
             a_mask[node] = true;
         }
@@ -169,6 +185,54 @@ impl RecomProposal {
             }
         }
         return seam;
+    }
+}
+
+impl Graph {
+    pub fn new_buffer(n: usize) -> Graph {
+        return Graph {
+            pops: Vec::<u32>::with_capacity(n),
+            neighbors: vec![Vec::<usize>::with_capacity(8); n],
+            edges: Vec::<Edge>::with_capacity(8 * n),
+            edges_start: vec![0 as usize; n],
+            total_pop: 0
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.pops.clear();
+        for adj in self.neighbors.iter_mut()  {
+            adj.clear();
+        }
+        self.edges.clear();
+
+        // TODO: These technically shouldn't have to be cleared.
+        // However, not clearing them explictly could make debugging harder;
+        // thus, we leave them in for now.
+        self.edges_start.fill(0);
+        self.total_pop = 0;
+    }
+}
+
+struct SubgraphBuffer {
+    raw_nodes: Vec<usize>,
+    node_to_idx: Vec<i64>,
+    graph: Graph
+}
+
+impl SubgraphBuffer {
+    pub fn new(n: usize) -> SubgraphBuffer {
+        return SubgraphBuffer {
+            raw_nodes: Vec::<usize>::with_capacity(n),
+            node_to_idx: vec![-1 as i64; n],
+            graph: Graph::new_buffer(n)
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.raw_nodes.clear();
+        self.node_to_idx.fill(-1);
+        self.graph.clear();
     }
 }
 
@@ -202,44 +266,33 @@ impl Partition {
         self.dist_adj = dist_adj;
         self.cut_edges = cut_edges;
     }
-    pub fn subgraph(&self, graph: &Graph, a: usize, b: usize) -> (Box<Graph>, Box<Vec<usize>>) {
-        let raw_nodes: Vec<usize> = self.dist_nodes[a]
-            .iter()
-            .cloned()
-            .chain(self.dist_nodes[b].iter().cloned())
-            .collect();
-        let n = raw_nodes.len();
-        let mut node_to_idx = vec![-1 as i64; graph.neighbors.len()];
-        let mut pops = Vec::<u32>::with_capacity(n);
-        let mut neighbors = Vec::<Vec<usize>>::with_capacity(n);
-        let mut edges = Vec::<Edge>::with_capacity(8 * n);
-        let mut edges_start = vec![0 as usize; n];
-        for (idx, &node) in raw_nodes.iter().enumerate() {
-            node_to_idx[node] = idx as i64;
+    pub fn subgraph(&self, graph: &Graph, buf: &mut SubgraphBuffer, a: usize, b: usize) {
+        buf.clear();
+        for &node in self.dist_nodes[a].iter() {
+            buf.raw_nodes.push(node);
         }
-        for (idx, &node) in raw_nodes.iter().enumerate() {
-            edges_start[idx] = edges.len();
-            let mut node_neighbors = Vec::<usize>::new();
+        for &node in self.dist_nodes[b].iter() {
+            buf.raw_nodes.push(node);
+        }
+        for (idx, &node) in buf.raw_nodes.iter().enumerate() {
+            buf.node_to_idx[node] = idx as i64;
+        }
+        let mut edge_pos = 0;
+        for (idx, &node) in buf.raw_nodes.iter().enumerate() {
+            buf.graph.edges_start[idx] = edge_pos;
             for &neighbor in graph.neighbors[node].iter() {
-                if node_to_idx[neighbor] >= 0 {
-                    let neighbor_idx = node_to_idx[neighbor] as usize;
-                    node_neighbors.push(neighbor_idx as usize);
+                if buf.node_to_idx[neighbor] >= 0 {
+                    let neighbor_idx = buf.node_to_idx[neighbor] as usize;
+                    buf.graph.neighbors[idx].push(neighbor_idx as usize);
                     if neighbor_idx > idx as usize {
-                        edges.push(Edge(idx, neighbor_idx as usize));
+                        buf.graph.edges.push(Edge(idx, neighbor_idx as usize));
+                        edge_pos += 1;
                     }
                 }
             }
-            pops.push(graph.pops[node]);
-            neighbors.push(node_neighbors);
+            buf.graph.pops.push(graph.pops[node]);
         }
-        let graph = Graph {
-            pops: pops,
-            neighbors: neighbors,
-            edges: edges,
-            edges_start: edges_start,
-            total_pop: self.dist_pops[a] + self.dist_pops[b]
-        };
-        return (Box::new(graph), Box::new(raw_nodes));
+        buf.graph.total_pop = self.dist_pops[a] + self.dist_pops[b];
     }
     pub fn invariants(&self) -> bool {
         return self.contiguous() && self.pops_in_tolerance() && self.consec_labels();
@@ -272,64 +325,132 @@ fn rand_in_range(rng: &mut SmallRng, ub: u32) -> u32 {
     return Wrapping(m >> 32).0 as u32;
 }
 
-fn random_spanning_tree(graph: &Graph, rng: &mut SmallRng) -> Box<MST> {
-    let n = graph.neighbors.len();
-    let mut in_tree = vec![false; n];
-    let mut next = vec![-1 as i64; n];
+struct MSTBuffer {
+    in_tree: Vec<bool>,
+    next: Vec<i64>,
+    mst_edges: Vec<usize>,
+    mst: Vec<Vec<usize>>
+}
+
+impl MSTBuffer {
+    pub fn new(n: usize) -> MSTBuffer {
+        return MSTBuffer {
+            in_tree: vec![false; n],
+            next: vec![-1 as i64; n],
+            mst_edges: Vec::<usize>::with_capacity(n - 1),
+            mst: vec![Vec::<usize>::with_capacity(8); n]
+        };
+    }
+
+    pub fn clear(&mut self) {
+        self.in_tree.fill(false);
+        self.next.fill(-1);
+        self.mst_edges.clear();
+        for node in self.mst.iter_mut() {
+            node.clear();
+        }
+    }
+}
+
+fn random_spanning_tree(graph: &Graph, buf: &mut MSTBuffer, rng: &mut SmallRng) {
+    buf.clear();
+    let n = graph.pops.len();
     let root = rng.gen_range(0..n);
-    in_tree[root] = true;
+    buf.in_tree[root] = true;
     for i in 0..n {
         let mut u = i;
-        while !in_tree[u] {
+        while !buf.in_tree[u] {
             let neighbors = &graph.neighbors[u];
             let neighbor = neighbors[rand_in_range(rng, neighbors.len() as u32) as usize];
-            next[u] = neighbor as i64;
+            buf.next[u] = neighbor as i64;
             u = neighbor;
         }
         u = i;
-        while !in_tree[u] {
-            in_tree[u] = true;
-            u = next[u] as usize;
+        while !buf.in_tree[u] {
+            buf.in_tree[u] = true;
+            u = buf.next[u] as usize;
         }
     }
 
-    let mut mst_edges = Vec::<usize>::with_capacity(n - 1);
-    for (curr, &prev) in next.iter().enumerate() {
+    for (curr, &prev) in buf.next.iter().enumerate() {
         if prev >= 0 {
             let a = min(curr, prev as usize);
             let b = max(curr, prev as usize);
             let mut edge_idx = graph.edges_start[a];
             while graph.edges[edge_idx].0 == a {
                 if graph.edges[edge_idx].1 == b {
-                    mst_edges.push(edge_idx);
+                    buf.mst_edges.push(edge_idx);
                     break;
                 }
                 edge_idx += 1;
             }
         }
     }
-    assert!(mst_edges.len() == n - 1);
+    assert!(buf.mst_edges.len() == n - 1);
 
-    let mut mst = vec![Vec::<usize>::new(); n];
-    for &edge in mst_edges.iter() {
+    for &edge in buf.mst_edges.iter() {
         let Edge(src, dst) = graph.edges[edge];
-        mst[src].push(dst);
-        mst[dst].push(src);
+        buf.mst[src].push(dst);
+        buf.mst[dst].push(src);
     }
-    return Box::new(mst);
+}
+
+struct SplitBuffer {
+    visited: Vec<bool>,
+    pred: Vec<usize>,
+    succ: Vec<Vec<usize>>,
+    deque: VecDeque<usize>,
+    tree_pops: Vec<u32>,
+    pop_found: Vec<bool>,
+    balance_nodes: Vec<usize>,
+    in_a: Vec<bool>
+}
+
+impl SplitBuffer {
+    fn new(n: usize, m: usize) -> SplitBuffer {
+        return SplitBuffer {
+            visited: vec![false; n],
+            pred: vec![0; n],
+            succ: vec![Vec::<usize>::with_capacity(8); n],
+            deque: VecDeque::<usize>::with_capacity(n),
+            tree_pops: vec![0 as u32; n],
+            pop_found: vec![false; n],
+            balance_nodes: Vec::<usize>::with_capacity(m),
+            in_a: vec![false; n]
+        }
+    }
+    fn clear(&mut self) {
+        self.visited.fill(false);
+        for node in self.succ.iter_mut() {
+            node.clear();
+        }
+        self.pop_found.fill(false);
+        self.in_a.fill(false);
+        self.balance_nodes.clear();
+
+        // TODO: These technically shouldn't have to be cleared.
+        // However, not clearing them explictly could make debugging harder;
+        // thus, we leave them in for now.
+        self.tree_pops.fill(0);
+        self.pred.fill(0);
+        self.deque.clear();
+    }
 }
 
 fn random_split(
     subgraph: &Graph,
-    partition: &Partition,
     rng: &mut SmallRng,
     mst: &MST,
     a: usize,
     b: usize,
+    buf: &mut SplitBuffer,
+    proposal: &mut RecomProposal,
     subgraph_map: &Vec<usize>,
-    params: ChainParams,
-) -> Result<Box<RecomProposal>, String> {
-    let n = subgraph.neighbors.len();
+    params: &ChainParams,
+) -> Result<(), String> {
+    buf.clear();
+    proposal.clear();
+    let n = subgraph.pops.len();
     let mut root = 0;
     while root < n {
         if subgraph.neighbors[root].len() > 1 {
@@ -341,44 +462,37 @@ fn random_split(
         return Err("no leaf nodes in MST".to_string());
     }
     // Traverse the MST.
-    let mut visited = vec![false; n];
-    let mut pred = vec![0; n];
-    let mut succ = vec![Vec::<usize>::new(); n];
-    let mut queue = VecDeque::<usize>::with_capacity(n);
-    queue.push_back(root);
-    while let Some(next) = queue.pop_front() {
-        visited[next] = true;
+    buf.deque.push_back(root);
+    while let Some(next) = buf.deque.pop_front() {
+        buf.visited[next] = true;
         for &neighbor in mst[next].iter() {
-            if !visited[neighbor] {
-                queue.push_back(neighbor);
-                succ[next].push(neighbor);
-                pred[neighbor] = next;
+            if !buf.visited[neighbor] {
+                buf.deque.push_back(neighbor);
+                buf.succ[next].push(neighbor);
+                buf.pred[neighbor] = next;
             }
         }
     }
 
     // Recursively compute populations of subtrees.
-    let mut tree_pops = vec![0 as u32; n];
-    let mut pop_found = vec![false; n];
-    let mut stack = Vec::<usize>::with_capacity(n);
-    stack.push(root);
-    while let Some(next) = stack.pop() {
-        if !pop_found[next] {
+    buf.deque.push_back(root);
+    while let Some(next) = buf.deque.pop_back() {
+        if !buf.pop_found[next] {
             if subgraph.neighbors[next].len() == 1 {
-                tree_pops[next] = subgraph.pops[next];
-                pop_found[next] = true;
+                buf.tree_pops[next] = subgraph.pops[next];
+                buf.pop_found[next] = true;
             } else {
                 // Populations of all child nodes found. :)
-                if succ[next].iter().all(|&node| pop_found[node]) {
-                    tree_pops[next] = succ[next].iter().map(|&node| tree_pops[node]).sum();
-                    tree_pops[next] += subgraph.pops[next];
-                    pop_found[next] = true;
+                if buf.succ[next].iter().all(|&node| buf.pop_found[node]) {
+                    buf.tree_pops[next] = buf.succ[next].iter().map(|&node| buf.tree_pops[node]).sum();
+                    buf.tree_pops[next] += subgraph.pops[next];
+                    buf.pop_found[next] = true;
                 } else {
                     // Come back later.
-                    stack.push(next);
-                    for &neighbor in succ[next].iter() {
-                        if !pop_found[neighbor] {
-                            stack.push(neighbor);
+                    buf.deque.push_back(next);
+                    for &neighbor in buf.succ[next].iter() {
+                        if !buf.pop_found[neighbor] {
+                            buf.deque.push_back(neighbor);
                         }
                     }
                 }
@@ -387,62 +501,62 @@ fn random_split(
     }
 
     // Find ε-balanced cuts.
-    let mut balance_nodes = Vec::<usize>::new();
-    for (index, &pop) in tree_pops.iter().enumerate() {
+    for (index, &pop) in buf.tree_pops.iter().enumerate() {
         if pop >= params.min_pop
             && pop <= params.max_pop
             && subgraph.total_pop - pop >= params.min_pop
             && subgraph.total_pop - pop <= params.max_pop
         {
-            balance_nodes.push(index);
+            buf.balance_nodes.push(index);
         }
     }
-    if balance_nodes.is_empty() {
+    if buf.balance_nodes.is_empty() {
         return Err("no balanced cuts".to_string());
-    } else if balance_nodes.len() > params.M as usize {
+    } else if buf.balance_nodes.len() > params.M as usize {
         panic!(
             "Reversibility invariant violated: expected ≤{} balanced cuts, found {}",
             params.M,
-            balance_nodes.len()
+            buf.balance_nodes.len()
         );
     }
-    let balance_node = balance_nodes[rng.gen_range(0..balance_nodes.len())];
-    queue.push_back(balance_node);
+    let balance_node = buf.balance_nodes[rng.gen_range(0..buf.balance_nodes.len())];
+    buf.deque.push_back(balance_node);
 
     // Extract the nodes for a random cut.
-    let mut a_nodes = Vec::<usize>::with_capacity(n);
     let mut a_pop = 0;
-    let mut in_a = vec![false; n];
-    while let Some(next) = queue.pop_front() {
-        if !in_a[next] {
-            a_nodes.push(next);
+    while let Some(next) = buf.deque.pop_front() {
+        if !buf.in_a[next] {
+            proposal.a_nodes.push(subgraph_map[next]);
             a_pop += subgraph.pops[next];
-            in_a[next] = true;
-            for &node in succ[next].iter() {
-                queue.push_back(node);
+            buf.in_a[next] = true;
+            for &node in buf.succ[next].iter() {
+                buf.deque.push_back(node);
             }
         }
     }
-    let mut b_nodes = Vec::<usize>::with_capacity(n - a_nodes.len());
-    for (index, &e) in in_a.iter().enumerate() {
-        if !e {
-            b_nodes.push(index);
+    for index in 0..n {
+        if !buf.in_a[index] {
+            proposal.b_nodes.push(subgraph_map[index]);
         }
     }
-    return Ok(Box::new(RecomProposal {
-        a_label: a,
-        b_label: b,
-        a_nodes: a_nodes.iter().map(|&n| subgraph_map[n]).collect(),
-        b_nodes: b_nodes.iter().map(|&n| subgraph_map[n]).collect(),
-        a_pop: a_pop,
-        b_pop: subgraph.total_pop - a_pop,
-    }));
+    proposal.a_label = a;
+    proposal.b_label = b;
+    proposal.a_pop = a_pop;
+    proposal.b_pop = subgraph.total_pop - a_pop;
+    return Ok(());
 }
 
 fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
     let mut step = 0;
     let mut state = ChainState::default();
     let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
+
+    let n = graph.pops.len();
+    let mut subgraph_buf = SubgraphBuffer::new(n);
+    let mut mst_buf = MSTBuffer::new(n);
+    let mut split_buf = SplitBuffer::new(n, params.M as usize);
+    let mut proposal_buf = RecomProposal::new_buffer(n);
+
     while step <= params.num_steps {
         step += 1;
         //println!("step {}", step);
@@ -453,18 +567,28 @@ fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
             state.non_adjacent += 1; // Self-loop.
             continue;
         }
-        let (subgraph, subgraph_map) = partition.subgraph(graph, dist_a, dist_b);
+        partition.subgraph(graph, &mut subgraph_buf, dist_a, dist_b);
         // Step 2: draw a random spanning tree of the subgraph induced by the
         // two districts.
-        let mst = random_spanning_tree(&subgraph, &mut rng);
+        random_spanning_tree(&subgraph_buf.graph, &mut mst_buf, &mut rng);
         // Step 3: choose a random balance edge, if possible.
-        let split = random_split(&subgraph, partition, &mut rng, &mst, dist_a, dist_b, &subgraph_map, params);
+        let split = random_split(
+            &subgraph_buf.graph,
+            &mut rng,
+            &mst_buf.mst,
+            dist_a,
+            dist_b,
+            &mut split_buf,
+            &mut proposal_buf,
+            &subgraph_buf.raw_nodes,
+            &params
+        );
         match split {
-            Ok(proposal) => {
+            Ok(_) => {
                 // Step 4: accept with probability 1 / (M * seam length)
-                let seam_length = proposal.seam_length(graph);
+                let seam_length = proposal_buf.seam_length(graph);
                 if rng.gen::<f64>() < 1.0 / (seam_length as f64 * params.M as f64) { 
-                    partition.update(graph, &proposal);
+                    partition.update(graph, &proposal_buf);
                     println!("accepted!");
                     state = ChainState::default();
                 } else {
