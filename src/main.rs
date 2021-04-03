@@ -13,9 +13,8 @@ use serde_json::Value;
 use std::cmp::{max, min};
 use std::collections::VecDeque;
 use std::fs;
-use std::result::Result;
 use std::num::Wrapping;
-
+use std::result::Result;
 
 type MST = Vec<Vec<usize>>;
 
@@ -72,7 +71,6 @@ impl Default for ChainState {
         }
     }
 }
-
 
 fn from_networkx(
     path: &str,
@@ -161,8 +159,8 @@ impl RecomProposal {
             a_pop: 0,
             b_pop: 0,
             a_nodes: Vec::<usize>::with_capacity(n),
-            b_nodes: Vec::<usize>::with_capacity(n)
-        }
+            b_nodes: Vec::<usize>::with_capacity(n),
+        };
     }
 
     pub fn clear(&mut self) {
@@ -195,13 +193,13 @@ impl Graph {
             neighbors: vec![Vec::<usize>::with_capacity(8); n],
             edges: Vec::<Edge>::with_capacity(8 * n),
             edges_start: vec![0 as usize; n],
-            total_pop: 0
-        }
+            total_pop: 0,
+        };
     }
 
     pub fn clear(&mut self) {
         self.pops.clear();
-        for adj in self.neighbors.iter_mut()  {
+        for adj in self.neighbors.iter_mut() {
             adj.clear();
         }
         self.edges.clear();
@@ -217,7 +215,7 @@ impl Graph {
 struct SubgraphBuffer {
     raw_nodes: Vec<usize>,
     node_to_idx: Vec<i64>,
-    graph: Graph
+    graph: Graph,
 }
 
 impl SubgraphBuffer {
@@ -225,8 +223,8 @@ impl SubgraphBuffer {
         return SubgraphBuffer {
             raw_nodes: Vec::<usize>::with_capacity(n),
             node_to_idx: vec![-1 as i64; n],
-            graph: Graph::new_buffer(n)
-        }
+            graph: Graph::new_buffer(n),
+        };
     }
 
     pub fn clear(&mut self) {
@@ -329,7 +327,7 @@ struct MSTBuffer {
     in_tree: Vec<bool>,
     next: Vec<i64>,
     mst_edges: Vec<usize>,
-    mst: Vec<Vec<usize>>
+    mst: Vec<Vec<usize>>,
 }
 
 impl MSTBuffer {
@@ -338,7 +336,7 @@ impl MSTBuffer {
             in_tree: vec![false; n],
             next: vec![-1 as i64; n],
             mst_edges: Vec::<usize>::with_capacity(n - 1),
-            mst: vec![Vec::<usize>::with_capacity(8); n]
+            mst: vec![Vec::<usize>::with_capacity(8); n],
         };
     }
 
@@ -403,7 +401,7 @@ struct SplitBuffer {
     tree_pops: Vec<u32>,
     pop_found: Vec<bool>,
     balance_nodes: Vec<usize>,
-    in_a: Vec<bool>
+    in_a: Vec<bool>,
 }
 
 impl SplitBuffer {
@@ -416,8 +414,8 @@ impl SplitBuffer {
             tree_pops: vec![0 as u32; n],
             pop_found: vec![false; n],
             balance_nodes: Vec::<usize>::with_capacity(m),
-            in_a: vec![false; n]
-        }
+            in_a: vec![false; n],
+        };
     }
     fn clear(&mut self) {
         self.visited.fill(false);
@@ -484,7 +482,8 @@ fn random_split(
             } else {
                 // Populations of all child nodes found. :)
                 if buf.succ[next].iter().all(|&node| buf.pop_found[node]) {
-                    buf.tree_pops[next] = buf.succ[next].iter().map(|&node| buf.tree_pops[node]).sum();
+                    buf.tree_pops[next] =
+                        buf.succ[next].iter().map(|&node| buf.tree_pops[node]).sum();
                     buf.tree_pops[next] += subgraph.pops[next];
                     buf.pop_found[next] = true;
                 } else {
@@ -581,21 +580,21 @@ fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
             &mut split_buf,
             &mut proposal_buf,
             &subgraph_buf.raw_nodes,
-            &params
+            &params,
         );
         match split {
             Ok(_) => {
                 // Step 4: accept with probability 1 / (M * seam length)
                 let seam_length = proposal_buf.seam_length(graph);
-                if rng.gen::<f64>() < 1.0 / (seam_length as f64 * params.M as f64) { 
+                if rng.gen::<f64>() < 1.0 / (seam_length as f64 * params.M as f64) {
                     partition.update(graph, &proposal_buf);
                     println!("accepted!");
                     state = ChainState::default();
                 } else {
                     state.seam_length += 1;
                 }
-            },
-            Err(_) => state.no_split += 1  // TODO: break out errors?
+            }
+            Err(_) => state.no_split += 1, // TODO: break out errors?
         }
     }
 }
