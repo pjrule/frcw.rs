@@ -5,6 +5,8 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 extern crate clap;
 extern crate rand;
 extern crate serde_json;
+extern crate crossbeam;
+extern crate crossbeam_channel;
 use clap::{value_t, App, Arg};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -15,12 +17,16 @@ use std::collections::VecDeque;
 use std::fs;
 use std::num::Wrapping;
 use std::result::Result;
+use std::thread;
+use std::ops::Add;
+use crossbeam_channel::unbounded;
 
 type MST = Vec<Vec<usize>>;
 
 #[derive(Clone, Hash, Eq, PartialEq)]
 struct Edge(usize, usize);
 
+#[derive(Clone)]
 struct Graph {
     edges: Vec<Edge>,
     pops: Vec<u32>,
@@ -29,6 +35,7 @@ struct Graph {
     total_pop: u32,
 }
 
+#[derive(Clone)]
 struct Partition {
     num_dists: u32,
     assignments: Vec<u32>,
@@ -38,6 +45,7 @@ struct Partition {
     dist_nodes: Vec<Vec<usize>>,
 }
 
+#[derive(Clone)]
 struct RecomProposal {
     a_label: usize,
     b_label: usize,
@@ -56,18 +64,21 @@ struct ChainParams {
     rng_seed: u64,
 }
 
-struct ChainState {
-    non_adjacent: u32,
-    no_split: u32,
-    seam_length: u32,
+#[derive(Copy, Clone, Default)]
+struct ChainCounts {
+    non_adjacent: usize,
+    no_split: usize,
+    seam_length: usize
 }
 
-impl Default for ChainState {
-    fn default() -> ChainState {
-        ChainState {
-            non_adjacent: 0,
-            no_split: 0,
-            seam_length: 0,
+impl Add for ChainCounts {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            non_adjacent: self.non_adjacent + other.non_adjacent,
+            no_split: self.no_split + other.no_split,
+            seam_length: self.seam_length + other.seam_length
         }
     }
 }
@@ -219,11 +230,11 @@ struct SubgraphBuffer {
 }
 
 impl SubgraphBuffer {
-    pub fn new(n: usize) -> SubgraphBuffer {
+    pub fn new(n: usize, b: usize) -> SubgraphBuffer {
         return SubgraphBuffer {
-            raw_nodes: Vec::<usize>::with_capacity(n),
+            raw_nodes: Vec::<usize>::with_capacity(b),
             node_to_idx: vec![-1 as i64; n],
-            graph: Graph::new_buffer(n),
+            graph: Graph::new_buffer(b),
         };
     }
 
@@ -309,18 +320,51 @@ impl Partition {
     }
 }
 
-fn rand_in_range(rng: &mut SmallRng, ub: u32) -> u32 {
-    // https://www.pcg-random.org/posts/bounded-rands.html
-    let mut t = (Wrapping(0) - Wrapping(ub)).0 % ub;
-    let mut x = rng.gen::<u32>();
-    let mut m = (x as u64) * (ub as u64);
-    let mut l = m as u32;
-    while l < t {
-        x = rng.gen::<u32>();
-        m = (x as u64) * (ub as u64);
-        l = Wrapping(m).0 as u32;
+const RANGE_BUF_SIZE: usize = 1 << 20;
+struct RandomRangeBuffer {
+    buf: Vec<u8>,
+    size: usize,
+    pos: usize,
+}
+
+impl RandomRangeBuffer {
+    fn new(rng: &mut SmallRng) -> RandomRangeBuffer {
+        let mut buf = vec![0 as u8; RANGE_BUF_SIZE];
+        rng.fill(&mut buf[..]);
+        return RandomRangeBuffer {
+            buf: buf,
+            size: RANGE_BUF_SIZE,
+            pos: 0,
+        }
     }
-    return Wrapping(m >> 32).0 as u32;
+
+    fn next(&mut self, rng: &mut SmallRng) -> u8 {
+        let val = self.buf[self.pos];
+        self.pos += 1;
+        if self.pos == self.size {
+            rng.fill(&mut self.buf[..]);
+            self.pos = 0;
+        }
+        return val;
+    }
+
+    fn range(&mut self, rng: &mut SmallRng, ub: u8) -> u8 {
+        // https://www.pcg-random.org/posts/bounded-rands.html
+        // https://lemire.me/blog/2019/06/06/nearly-divisionless-
+        // random-integer-generation-on-various-systems/
+        let mut x = self.next(rng);
+        let mut m = (x as u16) * (ub as u16);
+        let mut l = Wrapping(m).0 as u8;
+        if l < ub {
+            let t = (Wrapping(0) - Wrapping(ub)).0 % ub;
+            while l < t {
+                x = self.next(rng);
+                m = (x as u16) * (ub as u16);
+                l = Wrapping(m).0 as u8;
+            }
+        }
+        return Wrapping(m >> 8).0 as u8;
+    }
 }
 
 struct MSTBuffer {
@@ -350,7 +394,7 @@ impl MSTBuffer {
     }
 }
 
-fn random_spanning_tree(graph: &Graph, buf: &mut MSTBuffer, rng: &mut SmallRng) {
+fn random_spanning_tree(graph: &Graph, buf: &mut MSTBuffer, range_buf: &mut RandomRangeBuffer, rng: &mut SmallRng) {
     buf.clear();
     let n = graph.pops.len();
     let root = rng.gen_range(0..n);
@@ -359,7 +403,7 @@ fn random_spanning_tree(graph: &Graph, buf: &mut MSTBuffer, rng: &mut SmallRng) 
         let mut u = i;
         while !buf.in_tree[u] {
             let neighbors = &graph.neighbors[u];
-            let neighbor = neighbors[rand_in_range(rng, neighbors.len() as u32) as usize];
+            let neighbor = neighbors[range_buf.range(rng, neighbors.len() as u8) as usize];
             buf.next[u] = neighbor as i64;
             u = neighbor;
         }
@@ -384,7 +428,10 @@ fn random_spanning_tree(graph: &Graph, buf: &mut MSTBuffer, rng: &mut SmallRng) 
             }
         }
     }
-    assert!(buf.mst_edges.len() == n - 1);
+    if buf.mst_edges.len() != n - 1 {
+        panic!("expected to have {} edges in MST but got {}", n - 1, buf.mst_edges.len());
+    }
+    //assert!(buf.mst_edges.len() == n - 1);
 
     for &edge in buf.mst_edges.iter() {
         let Edge(src, dst) = graph.edges[edge];
@@ -545,16 +592,183 @@ fn random_split(
     return Ok(());
 }
 
-fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
+fn node_bound(pops: &Vec<u32>, max_pop: u32) -> usize {
+    let mut sorted_pops = pops.clone();
+    sorted_pops.sort();
+    let mut node_bound = 0;
+    let mut total = 0;
+    while total < 2 * max_pop {
+        total += sorted_pops[node_bound];
+        node_bound += 1;
+    }
+    return node_bound + 1;
+}
+
+struct JobPacket {
+    n_steps: usize,
+    diff: Option<RecomProposal>,
+    terminate: bool
+}
+
+struct ResultPacket {
+    counts: ChainCounts,
+    proposals: Vec<RecomProposal>
+}
+
+fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_threads: usize, job_size: usize) {
     let mut step = 0;
-    let mut state = ChainState::default();
+    let mut state = ChainCounts::default();
+    let node_ub = node_bound(&graph.pops, params.max_pop);
+    let mut job_sends = vec![];
+    let mut job_recvs = vec![];
+    for _ in 0..n_threads { // TODO: fancy unzipping?
+        let (s, r) = unbounded();
+        job_sends.push(s);
+        job_recvs.push(r); 
+    }
+    let (result_send, result_recv) = unbounded();
     let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
 
+    // Start threads.
+    crossbeam::scope(|scope| {
+        for t_idx in 0..n_threads {
+            println!("spawning thread {}...", t_idx);
+            let job_r = job_recvs[t_idx].clone();
+            let res_s = result_send.clone();
+            let graph = graph.clone();
+            let mut partition = partition.clone();
+            scope.spawn(move |_| {
+                let n = graph.pops.len();
+                let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed + t_idx as u64 + 1); // TODO: something better
+                let mut subgraph_buf = SubgraphBuffer::new(n, node_ub);
+                let mut mst_buf = MSTBuffer::new(node_ub);
+                let mut split_buf = SplitBuffer::new(node_ub, params.M as usize);
+                let mut proposal_buf = RecomProposal::new_buffer(node_ub);
+                let mut range_buf = RandomRangeBuffer::new(&mut rng);
+
+                let mut next: JobPacket = job_r.recv().unwrap();
+                while !next.terminate {
+                    match next.diff {
+                        Some(diff) => partition.update(&graph, &diff),
+                        None => {}
+                    }
+                    let mut counts = ChainCounts::default();
+                    let mut proposals = Vec::<RecomProposal>::new();
+                    for _ in 0..next.n_steps {
+                        let dist_a = rng.gen_range(0..partition.num_dists) as usize;
+                        let dist_b = rng.gen_range(0..partition.num_dists) as usize;
+                        if partition.dist_adj[(dist_a * partition.num_dists as usize) + dist_b] == 0 {
+                            counts.non_adjacent += 1; // Self-loop.
+                            continue;
+                        }
+                        partition.subgraph(&graph, &mut subgraph_buf, dist_a, dist_b);
+                        // Step 2: draw a random spanning tree of the subgraph induced by the
+                        // two districts.
+                        random_spanning_tree(&subgraph_buf.graph, &mut mst_buf, &mut range_buf, &mut rng);
+                        // Step 3: choose a random balance edge, if possible.
+                        let split = random_split(
+                            &subgraph_buf.graph,
+                            &mut rng,
+                            &mst_buf.mst,
+                            dist_a,
+                            dist_b,
+                            &mut split_buf,
+                            &mut proposal_buf,
+                            &subgraph_buf.raw_nodes,
+                            &params,
+                        );
+                        match split {
+                            Ok(_) => {
+                                // Step 4: accept with probability 1 / (M * seam length)
+                                let seam_length = proposal_buf.seam_length(&graph);
+                                if rng.gen::<f64>() < 1.0 / (seam_length as f64 * params.M as f64) {
+                                    proposals.push(proposal_buf.clone());
+                                } else {
+                                    counts.seam_length += 1;
+                                }
+                            }
+                            Err(_) => counts.no_split += 1, // TODO: break out errors?
+                        }
+                    }
+                    res_s.send(ResultPacket {
+                        counts: counts,
+                        proposals: proposals
+                    });
+                    next = job_r.recv().unwrap();
+                }
+            });
+        }
+
+        if params.num_steps > 0 {
+            for job in job_sends.iter() {
+                job.send(JobPacket{ n_steps: job_size, diff: None, terminate: false });
+            }
+        }
+        while step <= params.num_steps {
+            println!("{}", step);
+            let mut counts = ChainCounts::default();
+            let mut proposals = Vec::<RecomProposal>::new();
+            for i in 0..n_threads {
+                let packet: ResultPacket = result_recv.recv().unwrap();
+                counts = counts + packet.counts;
+                proposals.extend(packet.proposals);
+            }
+            let loops = counts.non_adjacent + counts.no_split + counts.seam_length;
+            //println!("non-adjacent: {}\tno balanced cut: {}\tseam length rejection: {}\tproposals: {}", counts.non_adjacent, counts.no_split, counts.seam_length, proposals.len());
+            if proposals.len() > 0 {
+                // Sample events without replacement.
+                let mut total = loops + proposals.len();
+                while total > 0 {
+                    let event = rng.gen_range(0..total);
+                    if event >= 0 && event < counts.non_adjacent {
+                        state.non_adjacent += 1;
+                        counts.non_adjacent -= 1;
+                    } else if event >= counts.non_adjacent && event < counts.non_adjacent + counts.no_split {
+                        state.no_split += 1;
+                        counts.no_split -= 1;
+                    } else if event >= counts.non_adjacent + counts.no_split && event < counts.non_adjacent + counts.no_split + counts.seam_length {
+                        state.seam_length += 1;
+                        counts.seam_length -= 1;
+                    } else {
+                        println!("accepted!");
+                        let proposal = &proposals[rng.gen_range(0..proposals.len())];
+                        for job in job_sends.iter() {
+                            job.send(JobPacket {
+                                n_steps: job_size,
+                                diff: Some(proposal.clone()),
+                                terminate: false
+                            });
+                        }
+                        break;
+                    }
+                    total -= 1;
+                }
+            } else {
+                state = state + counts;
+                for job in job_sends.iter() {
+                    job.send(JobPacket{ n_steps: job_size, diff: None, terminate: false });
+                }
+            }
+            step += loops as u64;
+        }
+        for job in job_sends.iter() {
+            job.send(JobPacket{ n_steps: job_size, diff: None, terminate: true });
+        }
+    }).unwrap();
+}
+
+fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
+    let mut step = 0;
+    let mut state = ChainCounts::default();
+    let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
+    let node_ub = node_bound(&graph.pops, params.max_pop);
+
     let n = graph.pops.len();
-    let mut subgraph_buf = SubgraphBuffer::new(n);
-    let mut mst_buf = MSTBuffer::new(n);
-    let mut split_buf = SplitBuffer::new(n, params.M as usize);
-    let mut proposal_buf = RecomProposal::new_buffer(n);
+    let mut subgraph_buf = SubgraphBuffer::new(n, node_ub);
+    let mut mst_buf = MSTBuffer::new(node_ub);
+    let mut split_buf = SplitBuffer::new(node_ub, params.M as usize);
+    let mut proposal_buf = RecomProposal::new_buffer(node_ub);
+    let mut range_buf = RandomRangeBuffer::new(&mut rng);
 
     while step <= params.num_steps {
         step += 1;
@@ -569,7 +783,7 @@ fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
         partition.subgraph(graph, &mut subgraph_buf, dist_a, dist_b);
         // Step 2: draw a random spanning tree of the subgraph induced by the
         // two districts.
-        random_spanning_tree(&subgraph_buf.graph, &mut mst_buf, &mut rng);
+        random_spanning_tree(&subgraph_buf.graph, &mut mst_buf, &mut range_buf, &mut rng);
         // Step 3: choose a random balance edge, if possible.
         let split = random_split(
             &subgraph_buf.graph,
@@ -589,7 +803,7 @@ fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
                 if rng.gen::<f64>() < 1.0 / (seam_length as f64 * params.M as f64) {
                     partition.update(graph, &proposal_buf);
                     println!("accepted!");
-                    state = ChainState::default();
+                    state = ChainCounts::default();
                 } else {
                     state.seam_length += 1;
                 }
@@ -674,5 +888,6 @@ fn main() {
         rng_seed: rng_seed,
         M: M,
     };
-    run_chain(&graph, &mut partition, params);
+    //run_chain(&graph, &mut partition, params);
+    run_multi_chain(&graph, &partition, params, 8, 512);
 }
