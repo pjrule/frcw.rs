@@ -867,11 +867,27 @@ fn main() {
                 .required(true)
                 .help("The normalizing constant for reversibility."),
         )
+        .arg(
+            Arg::with_name("n_threads")
+                .long("n-threads")
+                .takes_value(true)
+                .required(true)
+                .help("The number of threads to use.")
+        )
+        .arg(
+            Arg::with_name("job_size")
+                .long("job-size")
+                .takes_value(true)
+                .required(true)
+                .help("The number of proposals per batch job.")
+        )
         .get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
     let tol = value_t!(matches.value_of("tol"), f64).unwrap_or_else(|e| e.exit());
     let M = value_t!(matches.value_of("M"), u32).unwrap_or_else(|e| e.exit());
+    let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
+    let job_size = value_t!(matches.value_of("job_size"), usize).unwrap_or_else(|e| e.exit());
     assert!(tol >= 0.0 && tol <= 1.0);
 
     let (graph, mut partition) = from_networkx(
@@ -889,5 +905,5 @@ fn main() {
         M: M,
     };
     //run_chain(&graph, &mut partition, params);
-    run_multi_chain(&graph, &partition, params, 8, 512);
+    run_multi_chain(&graph, &partition, params, n_threads, job_size);
 }
