@@ -11,15 +11,16 @@ use clap::{value_t, App, Arg};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use serde_json::Result as SerdeResult;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::cmp::{max, min};
 use std::collections::VecDeque;
-use std::fs;
+use std::{fs, io};
+use std::path::PathBuf;
 use std::num::Wrapping;
 use std::result::Result;
-use std::thread;
 use std::ops::Add;
 use crossbeam_channel::unbounded;
+use sha3::{Sha3_256, Digest};
 
 type MST = Vec<Vec<usize>>;
 
@@ -612,10 +613,10 @@ struct JobPacket {
 
 struct ResultPacket {
     counts: ChainCounts,
-    proposals: Vec<RecomProposal>
+    proposals: Vec<RecomProposal>,
 }
 
-fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_threads: usize, job_size: usize) {
+fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_threads: usize, batch_size: usize) {
     let mut step = 0;
     let mut state = ChainCounts::default();
     let node_ub = node_bound(&graph.pops, params.max_pop);
@@ -632,7 +633,6 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
     // Start threads.
     crossbeam::scope(|scope| {
         for t_idx in 0..n_threads {
-            println!("spawning thread {}...", t_idx);
             let job_r = job_recvs[t_idx].clone();
             let res_s = result_send.clone();
             let graph = graph.clone();
@@ -692,7 +692,7 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
                     }
                     res_s.send(ResultPacket {
                         counts: counts,
-                        proposals: proposals
+                        proposals: proposals,
                     });
                     next = job_r.recv().unwrap();
                 }
@@ -701,11 +701,13 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
 
         if params.num_steps > 0 {
             for job in job_sends.iter() {
-                job.send(JobPacket{ n_steps: job_size, diff: None, terminate: false });
+                job.send(JobPacket{ n_steps: batch_size, diff: None, terminate: false });
             }
         }
+
+        print!("step\tnon_adjacent\tno_split\tseam_length\ta_label\tb_label\t");
+        println!("a_pop\tb_pop\ta_nodes\tb_nodes");
         while step <= params.num_steps {
-            println!("{}", step);
             let mut counts = ChainCounts::default();
             let mut proposals = Vec::<RecomProposal>::new();
             for i in 0..n_threads {
@@ -714,7 +716,6 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
                 proposals.extend(packet.proposals);
             }
             let loops = counts.non_adjacent + counts.no_split + counts.seam_length;
-            //println!("non-adjacent: {}\tno balanced cut: {}\tseam length rejection: {}\tproposals: {}", counts.non_adjacent, counts.no_split, counts.seam_length, proposals.len());
             if proposals.len() > 0 {
                 // Sample events without replacement.
                 let mut total = loops + proposals.len();
@@ -730,29 +731,34 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
                         state.seam_length += 1;
                         counts.seam_length -= 1;
                     } else {
-                        println!("accepted!");
                         let proposal = &proposals[rng.gen_range(0..proposals.len())];
                         for job in job_sends.iter() {
                             job.send(JobPacket {
-                                n_steps: job_size,
+                                n_steps: batch_size,
                                 diff: Some(proposal.clone()),
                                 terminate: false
                             });
                         }
+                        println!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{:?}",
+                                 step, counts.non_adjacent, counts.no_split, counts.seam_length,
+                                 proposal.a_label, proposal.b_label,
+                                 proposal.a_pop, proposal.b_pop,
+                                 proposal.a_nodes, proposal.b_nodes);
                         break;
                     }
                     total -= 1;
+                    step += 1;
                 }
             } else {
                 state = state + counts;
+                step += loops as u64;
                 for job in job_sends.iter() {
-                    job.send(JobPacket{ n_steps: job_size, diff: None, terminate: false });
+                    job.send(JobPacket{ n_steps: batch_size, diff: None, terminate: false });
                 }
             }
-            step += loops as u64;
         }
         for job in job_sends.iter() {
-            job.send(JobPacket{ n_steps: job_size, diff: None, terminate: true });
+            job.send(JobPacket{ n_steps: batch_size, diff: None, terminate: true });
         }
     }).unwrap();
 }
@@ -802,7 +808,6 @@ fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
                 let seam_length = proposal_buf.seam_length(graph);
                 if rng.gen::<f64>() < 1.0 / (seam_length as f64 * params.M as f64) {
                     partition.update(graph, &proposal_buf);
-                    println!("accepted!");
                     state = ChainCounts::default();
                 } else {
                     state.seam_length += 1;
@@ -875,8 +880,8 @@ fn main() {
                 .help("The number of threads to use.")
         )
         .arg(
-            Arg::with_name("job_size")
-                .long("job-size")
+            Arg::with_name("batch_size")
+                .long("batch-size")
                 .takes_value(true)
                 .required(true)
                 .help("The number of proposals per batch job.")
@@ -887,13 +892,17 @@ fn main() {
     let tol = value_t!(matches.value_of("tol"), f64).unwrap_or_else(|e| e.exit());
     let M = value_t!(matches.value_of("M"), u32).unwrap_or_else(|e| e.exit());
     let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
-    let job_size = value_t!(matches.value_of("job_size"), usize).unwrap_or_else(|e| e.exit());
+    let batch_size = value_t!(matches.value_of("batch_size"), usize).unwrap_or_else(|e| e.exit());
+    let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap())).unwrap().into_os_string().into_string().unwrap();
+    let pop_col = matches.value_of("pop_col").unwrap();
+    let assignment_col = matches.value_of("assignment_col").unwrap();
+
     assert!(tol >= 0.0 && tol <= 1.0);
 
     let (graph, mut partition) = from_networkx(
-        matches.value_of("graph_json").unwrap(),
-        matches.value_of("pop_col").unwrap(),
-        matches.value_of("assignment_col").unwrap(),
+        &graph_json,
+        pop_col,
+        assignment_col
     )
     .unwrap();
     let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
@@ -904,6 +913,27 @@ fn main() {
         rng_seed: rng_seed,
         M: M,
     };
+
+    let mut graph_file = fs::File::open(&graph_json).unwrap();
+    let mut graph_hasher = Sha3_256::new();
+    io::copy(&mut graph_file, &mut graph_hasher);
+    let graph_hash = format!("{:x}", graph_hasher.finalize());
+    let meta = json!({
+        "M": M,
+        "assignment_col": assignment_col,
+        "tol": tol,
+        "pop_col": pop_col,
+        "graph_path": graph_json,
+        "graph_sha3": graph_hash,
+        "batch_size": batch_size,
+        "rng_seed": rng_seed,
+        "num_threads": n_threads,
+        "num_steps": n_steps,
+        "parallel": true,
+       "graph_json": graph_json
+    });
+    println!("{}", meta.to_string());
     //run_chain(&graph, &mut partition, params);
-    run_multi_chain(&graph, &partition, params, n_threads, job_size);
+    run_multi_chain(&graph, &partition, params, n_threads, batch_size);
+    //println!("done");
 }
