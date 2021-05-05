@@ -493,7 +493,7 @@ fn random_split(
     proposal: &mut RecomProposal,
     subgraph_map: &Vec<usize>,
     params: &ChainParams,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     buf.clear();
     proposal.clear();
     let n = subgraph.pops.len();
@@ -590,7 +590,7 @@ fn random_split(
     proposal.b_label = b;
     proposal.a_pop = a_pop;
     proposal.b_pop = subgraph.total_pop - a_pop;
-    return Ok(());
+    return Ok((buf.balance_nodes.len()));
 }
 
 fn node_bound(pops: &Vec<u32>, max_pop: u32) -> usize {
@@ -678,10 +678,10 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
                             &params,
                         );
                         match split {
-                            Ok(_) => {
+                            Ok(n_splits) => {
                                 // Step 4: accept with probability 1 / (M * seam length)
                                 let seam_length = proposal_buf.seam_length(&graph);
-                                if rng.gen::<f64>() < 1.0 / (seam_length as f64 * params.M as f64) {
+                                if rng.gen::<f64>() < (n_splits as f64) / (seam_length as f64 * params.M as f64) {
                                     proposals.push(proposal_buf.clone());
                                 } else {
                                     counts.seam_length += 1;
@@ -803,10 +803,10 @@ fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
             &params,
         );
         match split {
-            Ok(_) => {
+            Ok(n_splits) => {
                 // Step 4: accept with probability 1 / (M * seam length)
                 let seam_length = proposal_buf.seam_length(graph);
-                if rng.gen::<f64>() < 1.0 / (seam_length as f64 * params.M as f64) {
+                if rng.gen::<f64>() < (n_splits as f64) / (seam_length as f64 * params.M as f64) {
                     partition.update(graph, &proposal_buf);
                     state = ChainCounts::default();
                 } else {
