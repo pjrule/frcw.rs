@@ -680,7 +680,7 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
                                 // Step 4: accept any particular edge with probability 1 / (M * seam length)
                                 let seam_length = proposal_buf.seam_length(&graph);
                                 let prob = (n_splits as f64) / (seam_length as f64 * params.M as f64);
-                                if prob > 1 {
+                                if prob > 1.0 {
                                     panic!("Invalid state: got {} splits, seam length {}", n_splits, seam_length);
                                 }
                                 if rng.gen::<f64>() < prob {
