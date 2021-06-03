@@ -763,60 +763,6 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
     }).unwrap();
 }
 
-fn run_chain(graph: &Graph, partition: &mut Partition, params: ChainParams) {
-    let mut step = 0;
-    let mut state = ChainCounts::default();
-    let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
-    let node_ub = node_bound(&graph.pops, params.max_pop);
-
-    let n = graph.pops.len();
-    let mut subgraph_buf = SubgraphBuffer::new(n, node_ub);
-    let mut mst_buf = MSTBuffer::new(node_ub);
-    let mut split_buf = SplitBuffer::new(node_ub, params.M as usize);
-    let mut proposal_buf = RecomProposal::new_buffer(node_ub);
-    let mut range_buf = RandomRangeBuffer::new(&mut rng);
-
-    while step <= params.num_steps {
-        step += 1;
-        //println!("step {}", step);
-        // Step 1: randomly sample from the n^2 district pairs.
-        let dist_a = rng.gen_range(0..partition.num_dists) as usize;
-        let dist_b = rng.gen_range(0..partition.num_dists) as usize;
-        if partition.dist_adj[(dist_a * partition.num_dists as usize) + dist_b] == 0 {
-            state.non_adjacent += 1; // Self-loop.
-            continue;
-        }
-        partition.subgraph(graph, &mut subgraph_buf, dist_a, dist_b);
-        // Step 2: draw a random spanning tree of the subgraph induced by the
-        // two districts.
-        random_spanning_tree(&subgraph_buf.graph, &mut mst_buf, &mut range_buf, &mut rng);
-        // Step 3: choose a random balance edge, if possible.
-        let split = random_split(
-            &subgraph_buf.graph,
-            &mut rng,
-            &mst_buf.mst,
-            dist_a,
-            dist_b,
-            &mut split_buf,
-            &mut proposal_buf,
-            &subgraph_buf.raw_nodes,
-            &params,
-        );
-        match split {
-            Ok(n_splits) => {
-                // Step 4: accept with probability 1 / (M * seam length)
-                let seam_length = proposal_buf.seam_length(graph);
-                if rng.gen::<f64>() < (n_splits as f64) / (seam_length as f64 * params.M as f64) {
-                    partition.update(graph, &proposal_buf);
-                    state = ChainCounts::default();
-                } else {
-                    state.seam_length += 1;
-                }
-            }
-            Err(_) => state.no_split += 1, // TODO: break out errors?
-        }
-    }
-}
 
 fn main() {
     let matches = App::new("frcw")
@@ -933,7 +879,6 @@ fn main() {
        "graph_json": graph_json
     });
     println!("{}", meta.to_string());
-    //run_chain(&graph, &mut partition, params);
     run_multi_chain(&graph, &partition, params, n_threads, batch_size);
     //println!("done");
 }
