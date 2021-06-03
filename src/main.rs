@@ -304,6 +304,7 @@ impl Partition {
         }
         buf.graph.total_pop = self.dist_pops[a] + self.dist_pops[b];
     }
+    /*
     pub fn invariants(&self) -> bool {
         return self.contiguous() && self.pops_in_tolerance() && self.consec_labels();
     }
@@ -319,6 +320,7 @@ impl Partition {
         // TODO: invariant check (optional).
         false
     }
+    */
 }
 
 const RANGE_BUF_SIZE: usize = 1 << 20;
@@ -548,7 +550,6 @@ fn random_split(
     }
 
     // Find ε-balanced cuts.
-    let mut prob_correction = 1.0;
     for (index, &pop) in buf.tree_pops.iter().enumerate() {
         if pop >= params.min_pop
             && pop <= params.max_pop
@@ -588,7 +589,7 @@ fn random_split(
     proposal.b_label = b;
     proposal.a_pop = a_pop;
     proposal.b_pop = subgraph.total_pop - a_pop;
-    return Ok((buf.balance_nodes.len()));
+    return Ok(buf.balance_nodes.len());
 }
 
 fn node_bound(pops: &Vec<u32>, max_pop: u32) -> usize {
@@ -712,7 +713,7 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
         while step <= params.num_steps {
             let mut counts = ChainCounts::default();
             let mut proposals = Vec::<RecomProposal>::new();
-            for i in 0..n_threads {
+            for _ in 0..n_threads {
                 let packet: ResultPacket = result_recv.recv().unwrap();
                 counts = counts + packet.counts;
                 proposals.extend(packet.proposals);
@@ -847,7 +848,7 @@ fn main() {
 
     assert!(tol >= 0.0 && tol <= 1.0);
 
-    let (graph, mut partition) = from_networkx(
+    let (graph, partition) = from_networkx(
         &graph_json,
         pop_col,
         assignment_col
