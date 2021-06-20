@@ -1,6 +1,6 @@
-extern crate jemallocator;
+use mimalloc::MiMalloc;
 #[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+static GLOBAL: MiMalloc = MiMalloc;
 
 extern crate clap;
 extern crate rand;
