@@ -56,6 +56,22 @@ struct RecomProposal {
     b_nodes: Vec<usize>,
 }
 
+#[derive(Copy, Clone, PartialEq)]
+enum ChainVariant {
+    // Reversible ReCom.
+    Reversible,  
+
+    // Normal (non-reversible) ReCom with district pairs selected by
+    // choosing a random cut edge.
+    CutEdges,
+
+    // Normal (non-reversible) ReCom with district pairs selected by
+    // choosing random pairs of district indices until an adjacent pair
+    // is found. Non-adjacent pairs are self-loops.
+    DistrictPairs
+}
+
+
 #[derive(Copy, Clone)]
 struct ChainParams {
     min_pop: u32,
@@ -63,6 +79,7 @@ struct ChainParams {
     M: u32,
     num_steps: u64,
     rng_seed: u64,
+    variant: ChainVariant
 }
 
 #[derive(Copy, Clone, Default)]
@@ -628,6 +645,9 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
     }
     let (result_send, result_recv) = unbounded();
     let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
+    let reversible = params.variant == ChainVariant::Reversible;
+    let sample_district_pairs = reversible || 
+        params.variant == ChainVariant::DistrictPairs;
 
     // Start threads.
     crossbeam::scope(|scope| {
@@ -654,11 +674,22 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
                     let mut counts = ChainCounts::default();
                     let mut proposals = Vec::<RecomProposal>::new();
                     for _ in 0..next.n_steps {
-                        let dist_a = rng.gen_range(0..partition.num_dists) as usize;
-                        let dist_b = rng.gen_range(0..partition.num_dists) as usize;
-                        if partition.dist_adj[(dist_a * partition.num_dists as usize) + dist_b] == 0 {
-                            counts.non_adjacent += 1; // Self-loop.
-                            continue;
+                        let mut dist_a = 0 as usize;
+                        let mut dist_b = 0 as usize;
+                        if sample_district_pairs {
+                            // Choose district pairs at random until finding an adjacent pair.
+                            dist_a = rng.gen_range(0..partition.num_dists) as usize;
+                            dist_b = rng.gen_range(0..partition.num_dists) as usize;
+                            if partition.dist_adj[(dist_a * partition.num_dists as usize) + dist_b] == 0 {
+                                counts.non_adjacent += 1; // Self-loop.
+                                continue;
+                            }
+                        } else {
+                            // Sample a cut edge, which is guaranteed to yield a pair of adjacent districts.
+                            let cut_edge_idx = rng.gen_range(0..partition.cut_edges.len()) as usize;
+                            let edge_idx = partition.cut_edges[cut_edge_idx] as usize;
+                            dist_a = partition.assignments[graph.edges[edge_idx].0] as usize;
+                            dist_b = partition.assignments[graph.edges[edge_idx].1] as usize;
                         }
                         partition.subgraph(&graph, &mut subgraph_buf, dist_a, dist_b);
                         // Step 2: draw a random spanning tree of the subgraph induced by the
@@ -678,16 +709,21 @@ fn run_multi_chain(graph: &Graph, partition: &Partition, params: ChainParams, n_
                         );
                         match split {
                             Ok(n_splits) => {
-                                // Step 4: accept any particular edge with probability 1 / (M * seam length)
-                                let seam_length = proposal_buf.seam_length(&graph);
-                                let prob = (n_splits as f64) / (seam_length as f64 * params.M as f64);
-                                if prob > 1.0 {
-                                    panic!("Invalid state: got {} splits, seam length {}", n_splits, seam_length);
-                                }
-                                if rng.gen::<f64>() < prob {
-                                    proposals.push(proposal_buf.clone());
+                                if reversible {
+                                    // Step 4: accept any particular edge with probability 1 / (M * seam length)
+                                    let seam_length = proposal_buf.seam_length(&graph);
+                                    let prob = (n_splits as f64) / (seam_length as f64 * params.M as f64);
+                                    if prob > 1.0 {
+                                        panic!("Invalid state: got {} splits, seam length {}", n_splits, seam_length);
+                                    }
+                                    if rng.gen::<f64>() < prob {
+                                        proposals.push(proposal_buf.clone());
+                                    } else {
+                                        counts.seam_length += 1;
+                                    }
                                 } else {
-                                    counts.seam_length += 1;
+                                    // Accept.
+                                    proposals.push(proposal_buf.clone());
                                 }
                             }
                             Err(_) => counts.no_split += 1, // TODO: break out errors?
@@ -771,7 +807,7 @@ fn main() {
     let matches = App::new("frcw")
         .version("0.1.0")
         .author("Parker J. Rule <parker.rule@tufts.edu>")
-        .about("A minimal implementation of the reversible ReCom Markov chain")
+        .about("A minimal implementation of the ReCom Markov chain")
         .arg(
             Arg::with_name("graph_json")
                 .long("graph-json")
@@ -835,6 +871,12 @@ fn main() {
                 .required(true)
                 .help("The number of proposals per batch job.")
         )
+        .arg(
+            Arg::with_name("variant")
+            .long("variant")
+            .takes_value(true)
+            .default_value("reversible")
+        )  // other options: cut_edges, district_pairs
         .get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
@@ -845,6 +887,14 @@ fn main() {
     let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap())).unwrap().into_os_string().into_string().unwrap();
     let pop_col = matches.value_of("pop_col").unwrap();
     let assignment_col = matches.value_of("assignment_col").unwrap();
+    let variant_str = matches.value_of("variant").unwrap();
+
+    let variant = match variant_str {
+        "reversible" => ChainVariant::Reversible,
+        "cut_edges"  => ChainVariant::CutEdges,
+        "district_pairs" => ChainVariant::DistrictPairs,
+        bad => panic!("Parameter error: invalid variant '{}'", bad)
+    };
 
     assert!(tol >= 0.0 && tol <= 1.0);
 
@@ -861,6 +911,7 @@ fn main() {
         num_steps: n_steps,
         rng_seed: rng_seed,
         M: M,
+        variant: variant
     };
 
     let mut graph_file = fs::File::open(&graph_json).unwrap();
