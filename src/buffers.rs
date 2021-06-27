@@ -2,12 +2,12 @@
 pub use self::mst::MSTBuffer;
 pub use self::random_range::RandomRangeBuffer;
 pub use self::split::SplitBuffer;
-///
+pub use self::subgraph::SubgraphBuffer;
+
 /// Buffers are intended to be lightweight, reusable containers
 /// that improve the efficiency of inner loops. In most buffers,
 /// fields are intended to be mutated directly, and invariants
 /// are not strictly enforced.
-pub use self::subgraph::SubgraphBuffer;
 
 /// Buffer for subgraphs.
 mod subgraph {
