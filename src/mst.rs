@@ -1,9 +1,9 @@
 //! Functions for generating random spanning trees.
-use std::cmp::{max, min};
+use crate::buffers::{MSTBuffer, RandomRangeBuffer};
+use crate::graph::{Edge, Graph};
 use rand::rngs::SmallRng;
 use rand::Rng;
-use crate::graph::{Graph, Edge};
-use crate::buffers::{MSTBuffer, RandomRangeBuffer};
+use std::cmp::{max, min};
 
 /// Draws a random spanning tree of a graph from the uniform distribution.
 /// Returns nothing; The MST buffer `buf` is updated in place.
@@ -27,7 +27,7 @@ pub fn uniform_random_spanning_tree(
     graph: &Graph,
     buf: &mut MSTBuffer,
     range_buf: &mut RandomRangeBuffer,
-    rng: &mut SmallRng
+    rng: &mut SmallRng,
 ) {
     buf.clear();
     let n = graph.pops.len();
@@ -63,7 +63,11 @@ pub fn uniform_random_spanning_tree(
         }
     }
     if buf.mst_edges.len() != n - 1 {
-        panic!("expected to have {} edges in MST but got {}", n - 1, buf.mst_edges.len());
+        panic!(
+            "expected to have {} edges in MST but got {}",
+            n - 1,
+            buf.mst_edges.len()
+        );
     }
 
     for &edge in buf.mst_edges.iter() {

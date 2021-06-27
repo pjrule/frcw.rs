@@ -1,7 +1,7 @@
 //! Data structures for partitionings (districting plans).
-use crate::graph::{Graph, Edge};
-use crate::recom::RecomProposal;
 use crate::buffers::SubgraphBuffer;
+use crate::graph::{Edge, Graph};
+use crate::recom::RecomProposal;
 
 /// A partitioning (districting plan) on top of a [Graph].
 /// The graph is referenced implicitly (we don't store a reference to it).
@@ -63,7 +63,7 @@ impl Partition {
     /// Copies the subgraph induced by the union of districts `a` and `b`
     /// into a buffer.
     ///
-    /// The resulting subgraph has relabeled node IDs: nodes 
+    /// The resulting subgraph has relabeled node IDs: nodes
     /// [0..# of nodes in district `a`] are from district `a`, and the
     /// remaining nodes are from district `b`. The `node_to_idx` member
     /// of the subgraph buffer contains a mapping between the node IDs

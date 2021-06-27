@@ -1,9 +1,9 @@
 //! Utility functions for loading graph and partition data.
+use crate::graph::{Edge, Graph};
+use crate::partition::Partition;
 use serde_json::Result as SerdeResult;
 use serde_json::Value;
 use std::fs;
-use crate::graph::{Graph, Edge};
-use crate::partition::Partition;
 
 /// Loads graph and partition data in the NetworkX `adjacency_data` format
 /// used by [GerryChain](https://github.com/mggg/gerrychain). Returns a
@@ -48,7 +48,7 @@ pub fn from_networkx(
         // TODO: we assume that assignments are 1-indexed (and in the range 1..<# of
         // districts>) and convert them to be 0-indexed.  This is not always the case
         // in real data and can be inconvenient to fix.  We should remove this assumption.
-        assignments.push((node[assignment_col].as_u64().unwrap() - 1) as u32); 
+        assignments.push((node[assignment_col].as_u64().unwrap() - 1) as u32);
 
         for neighbor in &node_neighbors {
             if neighbor > &index {
@@ -100,4 +100,3 @@ pub fn from_networkx(
     };
     return Ok((graph, partition));
 }
-

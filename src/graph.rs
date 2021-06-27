@@ -8,7 +8,7 @@ pub struct Edge(pub usize, pub usize);
 #[derive(Clone)]
 pub struct Graph {
     /// The graph's edges, represented as pairs of node indices,
-    /// sorted by the first element of the pair. 
+    /// sorted by the first element of the pair.
     /// (Nodes are represented implicitly.)
     pub edges: Vec<Edge>,
     /// The population at each node.

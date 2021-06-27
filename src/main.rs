@@ -3,21 +3,21 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-mod init;
 mod buffers;
 mod graph;
-mod partition;
+mod init;
 mod mst;
+mod partition;
 mod recom;
 
 use clap::{value_t, App, Arg};
-use std::{fs, io};
-use std::path::PathBuf;
-use sha3::{Sha3_256, Digest};
-use serde_json::json;
 use init::from_networkx;
-use recom::{RecomParams, RecomVariant};
 use recom::run::multi_chain;
+use recom::{RecomParams, RecomVariant};
+use serde_json::json;
+use sha3::{Digest, Sha3_256};
+use std::path::PathBuf;
+use std::{fs, io};
 
 fn main() {
     let matches = App::new("frcw")
@@ -78,21 +78,21 @@ fn main() {
                 .long("n-threads")
                 .takes_value(true)
                 .required(true)
-                .help("The number of threads to use.")
+                .help("The number of threads to use."),
         )
         .arg(
             Arg::with_name("batch_size")
                 .long("batch-size")
                 .takes_value(true)
                 .required(true)
-                .help("The number of proposals per batch job.")
+                .help("The number of proposals per batch job."),
         )
         .arg(
             Arg::with_name("variant")
-            .long("variant")
-            .takes_value(true)
-            .default_value("reversible")
-        )  // other options: cut_edges, district_pairs
+                .long("variant")
+                .takes_value(true)
+                .default_value("reversible"),
+        ) // other options: cut_edges, district_pairs
         .get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
@@ -100,26 +100,25 @@ fn main() {
     let M = value_t!(matches.value_of("M"), u32).unwrap_or_else(|e| e.exit());
     let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
     let batch_size = value_t!(matches.value_of("batch_size"), usize).unwrap_or_else(|e| e.exit());
-    let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap())).unwrap().into_os_string().into_string().unwrap();
+    let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap()))
+        .unwrap()
+        .into_os_string()
+        .into_string()
+        .unwrap();
     let pop_col = matches.value_of("pop_col").unwrap();
     let assignment_col = matches.value_of("assignment_col").unwrap();
     let variant_str = matches.value_of("variant").unwrap();
 
     let variant = match variant_str {
         "reversible" => RecomVariant::Reversible,
-        "cut_edges"  => RecomVariant::CutEdges,
+        "cut_edges" => RecomVariant::CutEdges,
         "district_pairs" => RecomVariant::DistrictPairs,
-        bad => panic!("Parameter error: invalid variant '{}'", bad)
+        bad => panic!("Parameter error: invalid variant '{}'", bad),
     };
 
     assert!(tol >= 0.0 && tol <= 1.0);
 
-    let (graph, partition) = from_networkx(
-        &graph_json,
-        pop_col,
-        assignment_col
-    )
-    .unwrap();
+    let (graph, partition) = from_networkx(&graph_json, pop_col, assignment_col).unwrap();
     let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
     let params = RecomParams {
         min_pop: ((1.0 - tol) * avg_pop as f64).floor() as u32,
@@ -127,7 +126,7 @@ fn main() {
         num_steps: n_steps,
         rng_seed: rng_seed,
         M: M,
-        variant: variant
+        variant: variant,
     };
 
     let mut graph_file = fs::File::open(&graph_json).unwrap();

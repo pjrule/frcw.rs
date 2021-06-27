@@ -1,14 +1,13 @@
 //! Buffer data structures to avoid memory reallocation.
+pub use self::mst::MSTBuffer;
+pub use self::random_range::RandomRangeBuffer;
+pub use self::split::SplitBuffer;
 ///
 /// Buffers are intended to be lightweight, reusable containers
 /// that improve the efficiency of inner loops. In most buffers,
 /// fields are intended to be mutated directly, and invariants
 /// are not strictly enforced.
-
 pub use self::subgraph::SubgraphBuffer;
-pub use self::mst::MSTBuffer;
-pub use self::split::SplitBuffer;
-pub use self::random_range::RandomRangeBuffer;
 
 /// Buffer for subgraphs.
 mod subgraph {
@@ -24,7 +23,7 @@ mod subgraph {
         /// A subgraph of the parent graph, with nodes relabeled to have
         /// consecutive node IDs. `nodes_to_idx` is used to map between
         /// node IDs in the subgraph and node IDs in the parent graph.
-        pub graph: Graph
+        pub graph: Graph,
     }
 
     impl SubgraphBuffer {
@@ -63,7 +62,7 @@ mod mst {
     }
 
     impl MSTBuffer {
-        /// Creates a buffer for a spanning tree of a subgraph 
+        /// Creates a buffer for a spanning tree of a subgraph
         /// within a graph of size `n`.
         pub fn new(n: usize) -> MSTBuffer {
             return MSTBuffer {
@@ -112,7 +111,7 @@ mod split {
         /// The populations of the subtrees rooted at each node
         /// in the BFS orientation.
         pub tree_pops: Vec<u32>,
-        /// Boolean representation of whether the population of 
+        /// Boolean representation of whether the population of
         /// the subtree rooted at a node (in the BFS orientation)
         /// has been computed.
         pub pop_found: Vec<bool>,
@@ -189,7 +188,7 @@ mod random_range {
                 buf: buf,
                 size: RANGE_BUF_SIZE,
                 pos: 0,
-            }
+            };
         }
 
         /// Gets the next value from the buffer, refreshing the buffer
