@@ -72,8 +72,8 @@ fn main() {
             Arg::with_name("M")
                 .long("M")
                 .takes_value(true)
-                .required(true)
-                .help("The normalizing constant for reversibility."),
+                .default_value("0") // TODO: just use unwrap_or_default() instead?
+                .help("The normalizing constant (reversible ReCom only)."),
         )
         .arg(
             Arg::with_name("n_threads")
@@ -140,6 +140,9 @@ fn main() {
         "jsonl-full" => Box::new(JSONLWriter::new(true)),
         bad => panic!("Parameter error: invalid writer '{}'", bad),
     };
+    if variant == RecomVariant::Reversible && M == 0 {
+        panic!("For reversible ReCom, specify M > 0.");
+    }
 
     assert!(tol >= 0.0 && tol <= 1.0);
 
@@ -158,22 +161,22 @@ fn main() {
     let mut graph_hasher = Sha3_256::new();
     io::copy(&mut graph_file, &mut graph_hasher).unwrap();
     let graph_hash = format!("{:x}", graph_hasher.finalize());
-    let meta = json!({
-        "meta": {
-            "M": M,
-            "assignment_col": assignment_col,
-            "tol": tol,
-            "pop_col": pop_col,
-            "graph_path": graph_json,
-            "graph_sha3": graph_hash,
-            "batch_size": batch_size,
-            "rng_seed": rng_seed,
-            "num_threads": n_threads,
-            "num_steps": n_steps,
-            "parallel": true,
-            "graph_json": graph_json
-        }
+    let mut meta = json!({
+        "assignment_col": assignment_col,
+        "tol": tol,
+        "pop_col": pop_col,
+        "graph_path": graph_json,
+        "graph_sha3": graph_hash,
+        "batch_size": batch_size,
+        "rng_seed": rng_seed,
+        "num_threads": n_threads,
+        "num_steps": n_steps,
+        "parallel": true,
+        "graph_json": graph_json
     });
-    println!("{}", meta.to_string());
+    if variant == RecomVariant::Reversible {
+        meta.as_object_mut().unwrap().insert("M".to_string(), json!(M));
+    }
+    println!("{}", json!({"meta": meta}).to_string());
     multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
 }
