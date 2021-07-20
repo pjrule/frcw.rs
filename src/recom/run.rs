@@ -220,6 +220,7 @@ pub fn multi_chain(
         }
 
         writer.init(graph, partition);
+        let mut sampled = ChainCounts::default();
         while step <= params.num_steps {
             let mut counts = ChainCounts::default();
             let mut proposals = Vec::<RecomProposal>::new();
@@ -233,19 +234,23 @@ pub fn multi_chain(
                 // Sample events without replacement.
                 let mut total = loops + proposals.len();
                 while total > 0 {
+                    step += 1;
                     let event = rng.gen_range(0..total);
                     if event < counts.non_adjacent {
                         state.non_adjacent += 1;
+                        sampled.non_adjacent += 1;
                         counts.non_adjacent -= 1;
                     } else if event >= counts.non_adjacent
                         && event < counts.non_adjacent + counts.no_split
                     {
                         state.no_split += 1;
+                        sampled.no_split += 1;
                         counts.no_split -= 1;
                     } else if event >= counts.non_adjacent + counts.no_split
                         && event < counts.non_adjacent + counts.no_split + counts.seam_length
                     {
                         state.seam_length += 1;
+                        sampled.seam_length += 1;
                         counts.seam_length -= 1;
                     } else {
                         let proposal = &proposals[rng.gen_range(0..proposals.len())];
@@ -257,14 +262,16 @@ pub fn multi_chain(
                             })
                             .unwrap();
                         }
-                        writer.step(step, &graph, &proposal, &counts);
+                        writer.step(step, &graph, &proposal, &sampled);
+                        // Reset sampled rejection stats until the next accepted step.
+                        sampled = ChainCounts::default();
                         break;
                     }
                     total -= 1;
-                    step += 1;
                 }
             } else {
                 state = state + counts;
+                sampled = sampled + counts;
                 step += loops as u64;
                 for job in job_sends.iter() {
                     job.send(JobPacket {
