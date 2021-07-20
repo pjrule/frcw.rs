@@ -224,7 +224,7 @@ pub fn multi_chain(
                     res_s.send(ResultPacket {
                         counts: counts,
                         proposals: proposals,
-                    });
+                    }).unwrap();
                     next = job_r.recv().unwrap();
                 }
             });
@@ -236,7 +236,7 @@ pub fn multi_chain(
                     n_steps: batch_size,
                     diff: None,
                     terminate: false,
-                });
+                }).unwrap();
             }
         }
 
@@ -276,7 +276,7 @@ pub fn multi_chain(
                                 n_steps: batch_size,
                                 diff: Some(proposal.clone()),
                                 terminate: false,
-                            });
+                            }).unwrap();
                         }
                         println!(
                             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{:?}",
@@ -304,7 +304,7 @@ pub fn multi_chain(
                         n_steps: batch_size,
                         diff: None,
                         terminate: false,
-                    });
+                    }).unwrap();
                 }
             }
         }
@@ -313,7 +313,7 @@ pub fn multi_chain(
                 n_steps: batch_size,
                 diff: None,
                 terminate: true,
-            });
+            }).unwrap();
         }
     })
     .unwrap();
