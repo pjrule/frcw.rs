@@ -9,6 +9,7 @@ mod init;
 mod mst;
 mod partition;
 mod recom;
+mod stats;
 
 use clap::{value_t, App, Arg};
 use init::from_networkx;
@@ -16,6 +17,7 @@ use recom::run::multi_chain;
 use recom::{RecomParams, RecomVariant};
 use serde_json::json;
 use sha3::{Digest, Sha3_256};
+use stats::{JSONLWriter, StatsWriter, TSVWriter};
 use std::path::PathBuf;
 use std::{fs, io};
 
@@ -93,6 +95,18 @@ fn main() {
                 .takes_value(true)
                 .default_value("reversible"),
         ) // other options: cut_edges, district_pairs
+        .arg(
+            Arg::with_name("writer")
+                .long("writer")
+                .takes_value(true)
+                .default_value("jsonl"),
+        ) // other options: jsonl-full, tsv
+        .arg(
+            Arg::with_name("sum_cols")
+                .long("sum-cols")
+                .multiple(true)
+                .takes_value(true),
+        )
         .get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
@@ -108,6 +122,11 @@ fn main() {
     let pop_col = matches.value_of("pop_col").unwrap();
     let assignment_col = matches.value_of("assignment_col").unwrap();
     let variant_str = matches.value_of("variant").unwrap();
+    let writer_str = matches.value_of("writer").unwrap();
+    let sum_cols = matches.values_of("sum_cols")
+        .unwrap_or_default()
+        .map(|c| c.to_string())
+        .collect();
 
     let variant = match variant_str {
         "reversible" => RecomVariant::Reversible,
@@ -115,10 +134,16 @@ fn main() {
         "district_pairs" => RecomVariant::DistrictPairs,
         bad => panic!("Parameter error: invalid variant '{}'", bad),
     };
+    let writer: Box<dyn StatsWriter> = match writer_str {
+        "tsv" => Box::new(TSVWriter::new()),
+        "jsonl" => Box::new(JSONLWriter::new(false)),
+        "jsonl-full" => Box::new(JSONLWriter::new(true)),
+        bad => panic!("Parameter error: invalid writer '{}'", bad),
+    };
 
     assert!(tol >= 0.0 && tol <= 1.0);
 
-    let (graph, partition) = from_networkx(&graph_json, pop_col, assignment_col).unwrap();
+    let (graph, partition) = from_networkx(&graph_json, pop_col, assignment_col, sum_cols).unwrap();
     let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
     let params = RecomParams {
         min_pop: ((1.0 - tol) * avg_pop as f64).floor() as u32,
@@ -131,22 +156,24 @@ fn main() {
 
     let mut graph_file = fs::File::open(&graph_json).unwrap();
     let mut graph_hasher = Sha3_256::new();
-    io::copy(&mut graph_file, &mut graph_hasher);
+    io::copy(&mut graph_file, &mut graph_hasher).unwrap();
     let graph_hash = format!("{:x}", graph_hasher.finalize());
     let meta = json!({
-        "M": M,
-        "assignment_col": assignment_col,
-        "tol": tol,
-        "pop_col": pop_col,
-        "graph_path": graph_json,
-        "graph_sha3": graph_hash,
-        "batch_size": batch_size,
-        "rng_seed": rng_seed,
-        "num_threads": n_threads,
-        "num_steps": n_steps,
-        "parallel": true,
-       "graph_json": graph_json
+        "meta": {
+            "M": M,
+            "assignment_col": assignment_col,
+            "tol": tol,
+            "pop_col": pop_col,
+            "graph_path": graph_json,
+            "graph_sha3": graph_hash,
+            "batch_size": batch_size,
+            "rng_seed": rng_seed,
+            "num_threads": n_threads,
+            "num_steps": n_steps,
+            "parallel": true,
+            "graph_json": graph_json
+        }
     });
     println!("{}", meta.to_string());
-    multi_chain(&graph, &partition, params, n_threads, batch_size);
+    multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
 }

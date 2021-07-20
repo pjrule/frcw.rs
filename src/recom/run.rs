@@ -12,37 +12,11 @@ use crate::buffers::{MSTBuffer, RandomRangeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
 use crate::mst::uniform_random_spanning_tree;
 use crate::partition::Partition;
+use crate::stats::{ChainCounts, StatsWriter};
 use crossbeam::scope;
 use crossbeam_channel::unbounded;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use std::ops::Add;
-
-/// Self-loop statistics since the last accepted proposal.
-#[derive(Copy, Clone, Default)]
-struct ChainCounts {
-    /// The number of self-loops from non-adjacent district pairs.
-    non_adjacent: usize,
-    /// The number of self-loops from drawing a spanning tree
-    /// with no ε-balance nodes (and therefore no valid splits).
-    no_split: usize,
-    /// The number of self-loops from probabilistic rejection based
-    /// on seam length (reversible ReCom only).
-    seam_length: usize,
-}
-
-impl Add for ChainCounts {
-    type Output = Self;
-
-    /// Adds self-loop statistics.
-    fn add(self, other: Self) -> Self {
-        Self {
-            non_adjacent: self.non_adjacent + other.non_adjacent,
-            no_split: self.no_split + other.no_split,
-            seam_length: self.seam_length + other.seam_length,
-        }
-    }
-}
 
 /// Returns the maximum number of nodes in two districts based on node
 /// populations (`pop`) and the maximum district population (`max_pop`).
@@ -99,6 +73,7 @@ struct ResultPacket {
 ///
 /// * `graph` - The graph associated with `partition`.
 /// * `partition` - The partition to start the chain run from (updated in place).
+/// * `writer` - The statistics writer.
 /// * `params` - The parameters of the ReCom chain run.
 /// * `n_threads` - The number of worker threads (excluding the main thread).
 /// * `batch_size` - The number of steps per unit of multithreaded work. This
@@ -109,6 +84,7 @@ struct ResultPacket {
 pub fn multi_chain(
     graph: &Graph,
     partition: &Partition,
+    writer: Box<dyn StatsWriter>,
     params: RecomParams,
     n_threads: usize,
     batch_size: usize,
@@ -221,10 +197,12 @@ pub fn multi_chain(
                             Err(_) => counts.no_split += 1, // TODO: break out errors?
                         }
                     }
-                    res_s.send(ResultPacket {
-                        counts: counts,
-                        proposals: proposals,
-                    }).unwrap();
+                    res_s
+                        .send(ResultPacket {
+                            counts: counts,
+                            proposals: proposals,
+                        })
+                        .unwrap();
                     next = job_r.recv().unwrap();
                 }
             });
@@ -236,12 +214,12 @@ pub fn multi_chain(
                     n_steps: batch_size,
                     diff: None,
                     terminate: false,
-                }).unwrap();
+                })
+                .unwrap();
             }
         }
 
-        print!("step\tnon_adjacent\tno_split\tseam_length\ta_label\tb_label\t");
-        println!("a_pop\tb_pop\ta_nodes\tb_nodes");
+        writer.init(graph, partition);
         while step <= params.num_steps {
             let mut counts = ChainCounts::default();
             let mut proposals = Vec::<RecomProposal>::new();
@@ -256,7 +234,7 @@ pub fn multi_chain(
                 let mut total = loops + proposals.len();
                 while total > 0 {
                     let event = rng.gen_range(0..total);
-                    if event >= 0 && event < counts.non_adjacent {
+                    if event < counts.non_adjacent {
                         state.non_adjacent += 1;
                         counts.non_adjacent -= 1;
                     } else if event >= counts.non_adjacent
@@ -276,21 +254,10 @@ pub fn multi_chain(
                                 n_steps: batch_size,
                                 diff: Some(proposal.clone()),
                                 terminate: false,
-                            }).unwrap();
+                            })
+                            .unwrap();
                         }
-                        println!(
-                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{:?}",
-                            step,
-                            counts.non_adjacent,
-                            counts.no_split,
-                            counts.seam_length,
-                            proposal.a_label,
-                            proposal.b_label,
-                            proposal.a_pop,
-                            proposal.b_pop,
-                            proposal.a_nodes,
-                            proposal.b_nodes
-                        );
+                        writer.step(step, &graph, &proposal, &counts);
                         break;
                     }
                     total -= 1;
@@ -304,7 +271,8 @@ pub fn multi_chain(
                         n_steps: batch_size,
                         diff: None,
                         terminate: false,
-                    }).unwrap();
+                    })
+                    .unwrap();
                 }
             }
         }
@@ -313,7 +281,8 @@ pub fn multi_chain(
                 n_steps: batch_size,
                 diff: None,
                 terminate: true,
-            }).unwrap();
+            })
+            .unwrap();
         }
     })
     .unwrap();

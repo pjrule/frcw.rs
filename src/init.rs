@@ -3,6 +3,7 @@ use crate::graph::{Edge, Graph};
 use crate::partition::Partition;
 use serde_json::Result as SerdeResult;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 
 /// Loads graph and partition data in the NetworkX `adjacency_data` format
@@ -17,10 +18,12 @@ use std::fs;
 ///    population. This column should be integer-valued.
 /// * `assignment_col` - A column in the graph JSON corresponding to a
 ///    a seed partition. This column should be integer-valued and 1-indexed.
+/// * `columns` - The metadata columns to sum over (per district).
 pub fn from_networkx(
     path: &str,
     pop_col: &str,
     assignment_col: &str,
+    columns: Vec<String>,
 ) -> SerdeResult<(Graph, Partition)> {
     // TODO: should load from a generic buffer.
     let raw = fs::read_to_string(path).expect("Could not load graph");
@@ -34,6 +37,10 @@ pub fn from_networkx(
     let mut assignments = Vec::<u32>::with_capacity(num_nodes);
     let mut edges = Vec::<Edge>::new();
     let mut edges_start = vec![0 as usize; num_nodes];
+    let mut attr = HashMap::new();
+    for col in columns.to_vec().into_iter() {
+        attr.insert(col, Vec::<u32>::with_capacity(num_nodes));
+    }
 
     for (index, (node, adj)) in raw_nodes.iter().zip(raw_adj.iter()).enumerate() {
         edges_start[index] = edges.len();
@@ -43,6 +50,11 @@ pub fn from_networkx(
             .into_iter()
             .map(|n| n.as_object().unwrap()["id"].as_u64().unwrap() as usize)
             .collect();
+        for col in columns.iter() {
+            if let Some(data) = attr.get_mut(col) {
+                data.push(node[col].as_u64().unwrap() as u32);
+            }
+        }
         pops.push(node[pop_col].as_u64().unwrap() as u32);
         neighbors.push(node_neighbors.clone());
         // TODO: we assume that assignments are 1-indexed (and in the range 1..<# of
@@ -89,6 +101,7 @@ pub fn from_networkx(
         edges: edges.clone(),
         edges_start: edges_start.clone(),
         total_pop: total_pop,
+        attr: attr,
     };
     let partition = Partition {
         num_dists: num_dists,

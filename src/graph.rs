@@ -1,4 +1,5 @@
 //! A lightweight graph with population metadata.
+use std::collections::HashMap;
 
 /// Edges are pairs of node indices.
 #[derive(Clone, Hash, Eq, PartialEq)]
@@ -22,6 +23,8 @@ pub struct Graph {
     /// The total population over all nodes.
     /// (Should be equal to the sum of `pops`.)
     pub total_pop: u32,
+    /// Additional node attributes (optional).
+    pub attr: HashMap<String, Vec<u32>>,
 }
 
 impl Graph {
@@ -34,6 +37,7 @@ impl Graph {
             edges: Vec::<Edge>::with_capacity(8 * n),
             edges_start: vec![0 as usize; n],
             total_pop: 0,
+            attr: HashMap::new(),
         };
     }
 
