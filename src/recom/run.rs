@@ -119,7 +119,7 @@ pub fn multi_chain(
                     SeedableRng::seed_from_u64(params.rng_seed + t_idx as u64 + 1);
                 let mut subgraph_buf = SubgraphBuffer::new(n, node_ub);
                 let mut mst_buf = MSTBuffer::new(node_ub);
-                let mut split_buf = SplitBuffer::new(node_ub, params.M as usize);
+                let mut split_buf = SplitBuffer::new(node_ub, params.balance_ub as usize);
                 let mut proposal_buf = RecomProposal::new_buffer(node_ub);
                 let mut range_buf = RandomRangeBuffer::new(&mut rng);
 
@@ -177,7 +177,7 @@ pub fn multi_chain(
                                     // Step 4: accept any particular edge with probability 1 / (M * seam length)
                                     let seam_length = proposal_buf.seam_length(&graph);
                                     let prob =
-                                        (n_splits as f64) / (seam_length as f64 * params.M as f64);
+                                        (n_splits as f64) / (seam_length as f64 * params.balance_ub as f64);
                                     if prob > 1.0 {
                                         panic!(
                                             "Invalid state: got {} splits, seam length {}",

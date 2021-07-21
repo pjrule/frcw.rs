@@ -69,8 +69,9 @@ fn main() {
                 .help("The seed of the RNG used to draw proposals."),
         )
         .arg(
-            Arg::with_name("M")
-                .long("M")
+            Arg::with_name("balance_ub")
+                .long("balance-ub")
+                .short("M") // Variable used in RevReCom paper
                 .takes_value(true)
                 .default_value("0") // TODO: just use unwrap_or_default() instead?
                 .help("The normalizing constant (reversible ReCom only)."),
@@ -111,7 +112,7 @@ fn main() {
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
     let tol = value_t!(matches.value_of("tol"), f64).unwrap_or_else(|e| e.exit());
-    let M = value_t!(matches.value_of("M"), u32).unwrap_or_else(|e| e.exit());
+    let balance_ub = value_t!(matches.value_of("balance_ub"), u32).unwrap_or_else(|e| e.exit());
     let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
     let batch_size = value_t!(matches.value_of("batch_size"), usize).unwrap_or_else(|e| e.exit());
     let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap()))
@@ -140,7 +141,7 @@ fn main() {
         "jsonl-full" => Box::new(JSONLWriter::new(true)),
         bad => panic!("Parameter error: invalid writer '{}'", bad),
     };
-    if variant == RecomVariant::Reversible && M == 0 {
+    if variant == RecomVariant::Reversible && balance_ub == 0 {
         panic!("For reversible ReCom, specify M > 0.");
     }
 
@@ -153,7 +154,7 @@ fn main() {
         max_pop: ((1.0 + tol) * avg_pop as f64).ceil() as u32,
         num_steps: n_steps,
         rng_seed: rng_seed,
-        M: M,
+        balance_ub: balance_ub,
         variant: variant,
     };
 
@@ -175,7 +176,7 @@ fn main() {
         "graph_json": graph_json
     });
     if variant == RecomVariant::Reversible {
-        meta.as_object_mut().unwrap().insert("M".to_string(), json!(M));
+        meta.as_object_mut().unwrap().insert("balance_ub".to_string(), json!(balance_ub));
     }
     println!("{}", json!({"meta": meta}).to_string());
     multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
