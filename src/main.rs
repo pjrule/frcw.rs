@@ -3,23 +3,15 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-mod buffers;
-mod graph;
-mod init;
-mod mst;
-mod partition;
-mod recom;
-mod stats;
-
 use clap::{value_t, App, Arg};
-use init::from_networkx;
-use recom::run::multi_chain;
-use recom::{RecomParams, RecomVariant};
 use serde_json::json;
 use sha3::{Digest, Sha3_256};
-use stats::{JSONLWriter, StatsWriter, TSVWriter};
 use std::path::PathBuf;
 use std::{fs, io};
+use frcw::init::from_networkx;
+use frcw::recom::run::multi_chain;
+use frcw::recom::{RecomParams, RecomVariant};
+use frcw::stats::{JSONLWriter, StatsWriter, TSVWriter};
 
 fn main() {
     let matches = App::new("frcw")
@@ -124,7 +116,8 @@ fn main() {
     let assignment_col = matches.value_of("assignment_col").unwrap();
     let variant_str = matches.value_of("variant").unwrap();
     let writer_str = matches.value_of("writer").unwrap();
-    let sum_cols = matches.values_of("sum_cols")
+    let sum_cols = matches
+        .values_of("sum_cols")
         .unwrap_or_default()
         .map(|c| c.to_string())
         .collect();
@@ -176,8 +169,10 @@ fn main() {
         "graph_json": graph_json
     });
     if variant == RecomVariant::Reversible {
-        meta.as_object_mut().unwrap().insert("balance_ub".to_string(), json!(balance_ub));
+        meta.as_object_mut()
+            .unwrap()
+            .insert("balance_ub".to_string(), json!(balance_ub));
     }
-    println!("{}", json!({"meta": meta}).to_string());
+    println!("{}", json!({ "meta": meta }).to_string());
     multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
 }
