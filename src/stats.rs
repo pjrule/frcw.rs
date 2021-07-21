@@ -68,10 +68,10 @@ pub fn proposal_sums(graph: &Graph, proposal: &RecomProposal) -> HashMap<String,
 /// TODO: move outside of this module.
 pub trait StatsWriter {
     /// Prints data from the initial partition.
-    fn init(&self, graph: &Graph, partition: &Partition);
+    fn init(&mut self, graph: &Graph, partition: &Partition);
 
     /// Prints deltas generated from an accepted proposal.
-    fn step(&self, step: u64, graph: &Graph, proposal: &RecomProposal, counts: &ChainCounts);
+    fn step(&mut self, step: u64, graph: &Graph, proposal: &RecomProposal, counts: &ChainCounts);
 }
 
 /// Writes chain statistics in TSV (tab-separated values) format.
@@ -98,13 +98,13 @@ impl JSONLWriter {
 }
 
 impl StatsWriter for TSVWriter {
-    fn init(&self, _graph: &Graph, _partition: &Partition) {
+    fn init(&mut self, _graph: &Graph, _partition: &Partition) {
         // TSV column header.
         print!("step\tnon_adjacent\tno_split\tseam_length\ta_label\tb_label\t");
         println!("a_pop\tb_pop\ta_nodes\tb_nodes");
     }
 
-    fn step(&self, step: u64, _graph: &Graph, proposal: &RecomProposal, counts: &ChainCounts) {
+    fn step(&mut self, step: u64, _graph: &Graph, proposal: &RecomProposal, counts: &ChainCounts) {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{:?}",
             step,
@@ -122,7 +122,7 @@ impl StatsWriter for TSVWriter {
 }
 
 impl StatsWriter for JSONLWriter {
-    fn init(&self, graph: &Graph, partition: &Partition) {
+    fn init(&mut self, graph: &Graph, partition: &Partition) {
         // TSV column header.
         let stats = json!({
             "init": {
@@ -134,7 +134,7 @@ impl StatsWriter for JSONLWriter {
         println!("{}", stats.to_string());
     }
 
-    fn step(&self, step: u64, graph: &Graph, proposal: &RecomProposal, counts: &ChainCounts) {
+    fn step(&mut self, step: u64, graph: &Graph, proposal: &RecomProposal, counts: &ChainCounts) {
         let mut step = json!({
             "step": step,
             "dists": (proposal.a_label, proposal.b_label),

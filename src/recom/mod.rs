@@ -207,13 +207,13 @@ pub fn random_split(
     if buf.balance_nodes.is_empty() {
         return Err("no balanced cuts".to_string());
     } /* else if buf.balance_nodes.len() > params.balance_ub as usize {
-        // TODO: It might be useful to keep statistics here.
-        println!(
-            "Warning: found {} balance nodes (soft upper bound {})",
-            buf.balance_nodes.len(),
-            params.M
-        );
-    } */
+          // TODO: It might be useful to keep statistics here.
+          println!(
+              "Warning: found {} balance nodes (soft upper bound {})",
+              buf.balance_nodes.len(),
+              params.M
+          );
+      } */
     let balance_node = buf.balance_nodes[rng.gen_range(0..buf.balance_nodes.len())];
     buf.deque.push_back(balance_node);
 

@@ -84,7 +84,7 @@ struct ResultPacket {
 pub fn multi_chain(
     graph: &Graph,
     partition: &Partition,
-    writer: Box<dyn StatsWriter>,
+    mut writer: Box<dyn StatsWriter>,
     params: RecomParams,
     n_threads: usize,
     batch_size: usize,
