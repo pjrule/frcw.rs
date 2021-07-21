@@ -1,8 +1,8 @@
-/// Graph/initial partition fixtures for long-running tests.
-use std::path::PathBuf;
 use frcw::graph::Graph;
 use frcw::init::from_networkx;
 use frcw::partition::Partition;
+/// Graph/initial partition fixtures for long-running tests.
+use std::path::PathBuf;
 
 /// The location of the graph JSON data w.r.t. the project manifest.
 const GRAPH_FIXTURES_DIR: &str = "tests/graphs";
@@ -19,7 +19,7 @@ const VA_FILENAME: &str = "VA_precincts.json";
 const VA_POP_COL: &str = "TOTPOP";
 const VA_ASSIGNMENT_COL: &str = "CD_16";
 
-/// Pennsylvania precincts adjacency graph from a draft 
+/// Pennsylvania precincts adjacency graph from a draft
 /// shapefile processed by Max Fan (@InnovativeInventor).
 /// Seed plan generated with `recursive_tree_part` in GerryChain.
 const PA_FILENAME: &str = "PA_draft_4.json";
@@ -57,5 +57,3 @@ pub fn fixture_with_attributes(key: &str, columns: Vec<&str>) -> (Graph, Partiti
 }
 
 // TODO: allow for alternate seeds and population columns.
-
-

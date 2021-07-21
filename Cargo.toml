@@ -16,6 +16,9 @@ crossbeam-channel = "0.5.0"
 crossbeam = "0.8.0"
 sha3 = "0.9.1"
 
+[dev-dependencies]
+rstest = "0.10.0"
+
 [profile.dev]
 opt-level = 3
 debug = true
