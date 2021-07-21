@@ -90,7 +90,6 @@ pub fn multi_chain(
     batch_size: usize,
 ) {
     let mut step = 0;
-    let mut state = ChainCounts::default();
     let node_ub = node_bound(&graph.pops, params.max_pop);
     let mut job_sends = vec![];
     let mut job_recvs = vec![];
@@ -176,8 +175,8 @@ pub fn multi_chain(
                                 if reversible {
                                     // Step 4: accept any particular edge with probability 1 / (M * seam length)
                                     let seam_length = proposal_buf.seam_length(&graph);
-                                    let prob =
-                                        (n_splits as f64) / (seam_length as f64 * params.balance_ub as f64);
+                                    let prob = (n_splits as f64)
+                                        / (seam_length as f64 * params.balance_ub as f64);
                                     if prob > 1.0 {
                                         panic!(
                                             "Invalid state: got {} splits, seam length {}",
@@ -237,19 +236,16 @@ pub fn multi_chain(
                     step += 1;
                     let event = rng.gen_range(0..total);
                     if event < counts.non_adjacent {
-                        state.non_adjacent += 1;
                         sampled.non_adjacent += 1;
                         counts.non_adjacent -= 1;
                     } else if event >= counts.non_adjacent
                         && event < counts.non_adjacent + counts.no_split
                     {
-                        state.no_split += 1;
                         sampled.no_split += 1;
                         counts.no_split -= 1;
                     } else if event >= counts.non_adjacent + counts.no_split
                         && event < counts.non_adjacent + counts.no_split + counts.seam_length
                     {
-                        state.seam_length += 1;
                         sampled.seam_length += 1;
                         counts.seam_length -= 1;
                     } else {
@@ -270,7 +266,6 @@ pub fn multi_chain(
                     total -= 1;
                 }
             } else {
-                state = state + counts;
                 sampled = sampled + counts;
                 step += loops as u64;
                 for job in job_sends.iter() {
