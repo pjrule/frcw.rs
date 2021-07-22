@@ -1,0 +1,8 @@
+[package]
+name = "test_fixtures"
+version = "0.1.0"
+authors = ["Parker J. Rule <parker.rule@tufts.edu>"]
+edition = "2018"
+
+[dependencies]
+frcw = { path = ".." }

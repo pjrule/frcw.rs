@@ -5,7 +5,7 @@ use frcw::partition::Partition;
 use std::path::PathBuf;
 
 /// The location of the graph JSON data w.r.t. the project manifest.
-const GRAPH_FIXTURES_DIR: &str = "tests/graphs";
+const GRAPH_FIXTURES_DIR: &str = "graphs";
 
 /// Iowa counties adjacency graph.
 /// See https://github.com/mggg-states/IA-shapefiles

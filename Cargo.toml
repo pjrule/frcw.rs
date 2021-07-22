@@ -18,6 +18,7 @@ sha3 = "0.9.1"
 
 [dev-dependencies]
 rstest = "0.10.0"
+test_fixtures = { path = "test_fixtures" }
 
 [profile.dev]
 opt-level = 3

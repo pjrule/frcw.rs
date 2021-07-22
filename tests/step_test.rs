@@ -7,8 +7,7 @@ use std::collections::HashSet;
 /// Functional tests that verify ReCom chain invariants at each step.
 use std::iter::FromIterator;
 
-mod fixtures;
-use fixtures::{default_fixture, fixture_with_attributes};
+use test_fixtures::{default_fixture, fixture_with_attributes};
 use rstest::rstest;
 
 /// Verifies that a set of nodes is connected.
@@ -264,7 +263,29 @@ fn test_chain_invariants_revrecom_grid(
 }
 
 #[rstest]
-fn test_chain_invariants_recom_states(
+fn test_chain_invariants_recom_iowa(
+    #[values(0.01, 0.2)] pop_tol: f64,
+    #[values(RecomVariant::DistrictPairs, RecomVariant::CutEdges)] variant: RecomVariant,
+    #[values(1, 4)] n_threads: usize,
+    #[values(1, 4)] batch_size: usize,
+) {
+    let (graph, partition) = default_fixture("IA");
+    let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
+    let params = RecomParams {
+        min_pop: ((1.0 - pop_tol) * avg_pop as f64).floor() as u32,
+        max_pop: ((1.0 + pop_tol) * avg_pop as f64).ceil() as u32,
+        num_steps: 1000,
+        rng_seed: RNG_SEED,
+        balance_ub: 0,
+        variant: variant,
+    };
+    let writer = Box::new(StepInvariantWriter::new(params)) as Box<dyn StatsWriter>;
+    multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
+}
+
+#[ignore]
+#[rstest]
+fn test_chain_invariants_recom_ia(
     #[values("IA")] state: &str,
     #[values(1000)] num_steps: u64,
     #[values(0.01, 0.2)] pop_tol: f64,
