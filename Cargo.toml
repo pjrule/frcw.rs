@@ -18,7 +18,12 @@ sha3 = "0.9.1"
 
 [dev-dependencies]
 rstest = "0.10.0"
+criterion = "0.3"
 test_fixtures = { path = "test_fixtures" }
+
+[[bench]]
+name = "recom"
+harness = false
 
 [profile.dev]
 opt-level = 3
