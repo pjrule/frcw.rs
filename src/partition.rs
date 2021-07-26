@@ -103,14 +103,4 @@ impl Partition {
         }
         buf.graph.total_pop = self.dist_pops[a] + self.dist_pops[b];
     }
-
-    // TODO: invariant checks.
-    /*
-    pub fn invariants(&self) -> bool {
-        return self.contiguous() && self.pops_in_tolerance() && self.consec_labels();
-    }
-    fn contiguous(&self) -> bool { }
-    fn pops_in_tolerance(&self) -> bool { }
-    fn consec_labels(&self) -> bool { }
-    */
 }

@@ -72,6 +72,9 @@ pub trait StatsWriter {
 
     /// Prints deltas generated from an accepted proposal.
     fn step(&mut self, step: u64, graph: &Graph, proposal: &RecomProposal, counts: &ChainCounts);
+
+    /// Cleans up after the last step (useful for testing).
+    fn close(&mut self);
 }
 
 /// Writes chain statistics in TSV (tab-separated values) format.
@@ -119,6 +122,8 @@ impl StatsWriter for TSVWriter {
             proposal.b_nodes
         );
     }
+
+    fn close(&mut self) {}
 }
 
 impl StatsWriter for JSONLWriter {
@@ -150,4 +155,6 @@ impl StatsWriter for JSONLWriter {
         }
         println!("{}", json!({ "step": step }).to_string());
     }
+
+    fn close(&mut self) {}
 }

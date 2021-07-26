@@ -4,14 +4,14 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{value_t, App, Arg};
-use serde_json::json;
-use sha3::{Digest, Sha3_256};
-use std::path::PathBuf;
-use std::{fs, io};
 use frcw::init::from_networkx;
 use frcw::recom::run::multi_chain;
 use frcw::recom::{RecomParams, RecomVariant};
 use frcw::stats::{JSONLWriter, StatsWriter, TSVWriter};
+use serde_json::json;
+use sha3::{Digest, Sha3_256};
+use std::path::PathBuf;
+use std::{fs, io};
 
 fn main() {
     let matches = App::new("frcw")

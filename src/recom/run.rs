@@ -288,4 +288,5 @@ pub fn multi_chain(
         }
     })
     .unwrap();
+    writer.close();
 }
