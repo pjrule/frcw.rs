@@ -7,8 +7,8 @@ use std::collections::HashSet;
 /// Functional tests that verify ReCom chain invariants at each step.
 use std::iter::FromIterator;
 
-use test_fixtures::{default_fixture, fixture_with_attributes};
 use rstest::rstest;
+use test_fixtures::{default_fixture, fixture_with_attributes};
 
 /// Verifies that a set of nodes is connected.
 fn nodes_connected(graph: &Graph, nodes: &Vec<usize>) -> bool {
@@ -94,8 +94,16 @@ fn assignments_invariant(graph: &Graph, partition: &Partition) -> bool {
         });
 }
 
-/// Verifies that a partition's district adjacency matrix is correct.
-// TODO
+/// Verifies that a partition's `dist_adj` is consistent with `cut_edges`.
+fn dist_adj_invariant(graph: &Graph, partition: &Partition) -> bool {
+    let mut dist_adj = vec![0 as u32; (partition.num_dists * partition.num_dists) as usize];
+    for &edge_idx in partition.cut_edges.iter() {
+        let edge = &graph.edges[edge_idx as usize];
+        dist_adj[(edge.0 * partition.num_dists as usize) + edge.1] += 1;
+        dist_adj[(edge.1 * partition.num_dists as usize) + edge.0] += 1;
+    }
+    return dist_adj == partition.dist_adj;
+}
 
 /// Verifies that the global step count was updated properly from the step's counts.
 fn step_count_invariant(step: u64, last_step: u64, counts: &ChainCounts) -> bool {
@@ -103,9 +111,12 @@ fn step_count_invariant(step: u64, last_step: u64, counts: &ChainCounts) -> bool
     return step == last_step + counts_sum + 1;
 }
 
-/// Verifies that a partition's overall properties (e.g. number of nodes)
-/// are consistent with its graph.
-//fn graph_partition
+/// Verifies that a partition's overall properties (number of nodes,
+/// total population) are consistent with its graph.
+fn graph_partition_invariant(graph: &Graph, partition: &Partition) -> bool {
+    return graph.neighbors.len() == partition.assignments.len()
+        && graph.total_pop == partition.dist_pops.iter().sum::<u32>();
+}
 
 /// The state of a chain, generated from step deltas.
 struct StepInvariantWriter {
@@ -151,7 +162,26 @@ impl StatsWriter for StepInvariantWriter {
             population_tolerance_invariant(partition, self.params.min_pop, self.params.max_pop),
             "Initial partition outside population tolerances."
         );
-        // TODO: more here.
+        assert!(
+            population_sum_invariant(graph, partition),
+            "District population sums incorrect in initial partition."
+        );
+        assert!(
+            cut_edges_invariant(graph, partition),
+            "Cut edges don't match node assignments in initial partition."
+        );
+        assert!(
+            assignments_invariant(graph, partition),
+            ".assignments does not match .dist_nodes in initial partition"
+        );
+        assert!(
+            dist_adj_invariant(graph, partition),
+            "Initial partition has incorrect adjacency matrix."
+        );
+        assert!(
+            graph_partition_invariant(graph, partition),
+            "Node count and total population don't match between graph and initial partition."
+        );
     }
 
     /// Checks step-to-step chain invariants (i.e. the validity of each individual proposal).
@@ -177,7 +207,15 @@ impl StatsWriter for StepInvariantWriter {
         );
         assert!(
             cut_edges_invariant(graph, partition),
-            "Cut edges incorrect after proposal."
+            "Cut edges don't match node assignment after proposal."
+        );
+        assert!(
+            dist_adj_invariant(graph, partition),
+            "District adjacency matrix is incorrect after step."
+        );
+        assert!(
+            graph_partition_invariant(graph, partition),
+            "Node count and total population inconsistent with graph after step."
         );
         assert!(
             assignments_invariant(graph, partition),
@@ -198,11 +236,11 @@ impl StatsWriter for StepInvariantWriter {
         // Check that every district changed (relabeling counts as a change).
         let initial_partition = match self.initial_partition.as_ref() {
             Some(p) => p,
-            None => panic!("Writer must be initialized closing."),
+            None => panic!("Writer must be initialized before closing."),
         };
         let last_partition = match self.partition.as_ref() {
             Some(p) => p,
-            None => panic!("Writer must be initialized closing."),
+            None => panic!("Writer must be initialized before closing."),
         };
         // TODO: we assume nodes are _literally_ frozen (no permutation)--should we loosen?
         let all_districts_diff = initial_partition
@@ -283,18 +321,42 @@ fn test_chain_invariants_recom_iowa(
     multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
 }
 
+#[rstest]
+fn test_chain_invariants_revrecom_iowa(
+    #[values((0.01, 5), (0.2, 15))] pop_tol_balance_ub: (f64, u32),
+    #[values(1, 4)] n_threads: usize,
+    #[values(1, 16)] batch_size: usize,
+) {
+    let (graph, partition) = default_fixture("IA");
+    let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
+    let pop_tol = pop_tol_balance_ub.0;
+    let balance_ub = pop_tol_balance_ub.1;
+    let params = RecomParams {
+        min_pop: ((1.0 - pop_tol) * avg_pop as f64).floor() as u32,
+        max_pop: ((1.0 + pop_tol) * avg_pop as f64).ceil() as u32,
+        num_steps: 10000,
+        rng_seed: RNG_SEED,
+        balance_ub: balance_ub,
+        variant: RecomVariant::Reversible,
+    };
+    let writer = Box::new(StepInvariantWriter::new(params)) as Box<dyn StatsWriter>;
+    multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
+}
+
+/*
 #[ignore]
 #[rstest]
-fn test_chain_invariants_recom_ia(
-    #[values("IA")] state: &str,
+fn test_chain_invariants_revrecom_large_states(
+    #[values("PA", "VA")] state: &str,
     #[values(1000)] num_steps: u64,
-    #[values(0.01, 0.2)] pop_tol: f64,
-    #[values(RecomVariant::DistrictPairs, RecomVariant::CutEdges)] variant: RecomVariant,
+    #[values((0.01, 30), (0.05, 60))] pop_tol_balance_ub: (f64, u32),
     #[values(1, 4)] n_threads: usize,
     #[values(1, 4)] batch_size: usize,
 ) {
     let (graph, partition) = default_fixture(state);
     let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
+    let pop_tol = pop_tol_balance_ub.0;
+    let balance_ub = pop_tol_balance_ub.1;
     let params = RecomParams {
         min_pop: ((1.0 - pop_tol) * avg_pop as f64).floor() as u32,
         max_pop: ((1.0 + pop_tol) * avg_pop as f64).ceil() as u32,
@@ -306,4 +368,4 @@ fn test_chain_invariants_recom_ia(
     let writer = Box::new(StepInvariantWriter::new(params)) as Box<dyn StatsWriter>;
     multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
 }
-
+*/
