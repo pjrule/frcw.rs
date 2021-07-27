@@ -217,8 +217,7 @@ pub fn multi_chain(
                 .unwrap();
             }
         }
-
-        writer.init(graph, partition);
+        writer.init(graph, partition).unwrap();
         let mut sampled = ChainCounts::default();
         while step <= params.num_steps {
             let mut counts = ChainCounts::default();
@@ -258,7 +257,7 @@ pub fn multi_chain(
                             })
                             .unwrap();
                         }
-                        writer.step(step, &graph, &proposal, &sampled);
+                        writer.step(step, &graph, &proposal, &sampled).unwrap();
                         // Reset sampled rejection stats until the next accepted step.
                         sampled = ChainCounts::default();
                         break;
@@ -288,5 +287,5 @@ pub fn multi_chain(
         }
     })
     .unwrap();
-    writer.close();
+    writer.close().unwrap();
 }
