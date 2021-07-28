@@ -54,16 +54,20 @@ This project was originally a weekend project that lived in one `.rs` file, so i
 - [ ] Finish functional tests
   - [ ] Step-level invariants test _(in progress)_
     - [ ] Fix Crossbeam panic propagation in ReCom runner
+    - [ ] Convert `multi_chain` to an iterator and separate writer out
   - [ ] Determinism test
   - [ ] Seed and freeze
   - [ ] RevReCom distribution tests (integrate Mai Nguyen's Google Summer of Code project)
 - [ ] Add benchmarks _(in progress)_
 - [ ] Add unit tests
+- [ ] Add property tests (`quickcheck`) where appropriate
 - [ ] Set up CI/CD (test and linting)
+- [ ] Set up Codecov
 - [ ] Refactoring 
   - [ ] Convert `RecomProposal` → `Proposal` and move to top level
   - [ ] Generalize fields in `Proposal` ({a, b} → `SmallVec`s)
-  - [ ] Generalize `ChainCounts` and remove count update ugliness in the ReCom runner
+  - [x] Generalize `ChainCounts` and remove count update ugliness in the ReCom runner
+  - [x] Split up `stats` module
   - [ ] Rename sums → tallies for consistency with GerryChain
   - [ ] Define type aliases (i.e. don't hardcode `u32` everywhere)
     - [ ] Assess types: is using `u32` everywhere gaining us that much performance? What use cases might result in overflow?
@@ -72,14 +76,24 @@ This project was originally a weekend project that lived in one `.rs` file, so i
   - [ ] Break up long/confusing functions
     - [ ] `recom::run::multi_chain`
     - [ ] `recom::random_split` _(maybe)_
-  - [ ] Enforce Rust idioms: remove `return` where possible, etc.
+  - [ ] Enforce Rust idioms: remove `return` and `&Vec` where possible, etc.
+  - [ ] Make spanning tree statistics and other linear algebra-heavy features a crate-level feature?
+  - [ ] Remove TSV writer? (in any case, should strongly encourage JSONL)
+  - [ ] Struct marking which stats to collect?
+  - [ ] `default` → `new` where appropriate
 - [ ] New features (definite)
-  - [ ] GerryChain-like scoring system for common use cases: cut edge counts, area, perimeter, spanning tree statistics, etc.
+  - [ ] GerryChain-like scoring system for common use cases
+    - [ ] Cut edge counts
+    - [ ] Area & perimeter
+    - [ ] Spanning tree statistics
+    - [ ] ???
   - [ ] Make score calculations non-blocking (allow for multiple scoring threads?)
   - [ ] Batch size and thread count autotuning
   - [ ] Another round of performance optimizations
   - [ ] More ReCom variants
-      - [ ] Add RMST sampling using Kruskal's algorithm/Prim's algorithm
+      - [ ] Add RMST sampling using Kruskal's algorithm
+  - [x] Rectangular grid generator (useful for testing)
+  - [ ] Minimal relabeling
 - [ ] New features (possible)
   - [ ] Alternate input formats? (list of edges?)
   - [ ] Alternate output formats? (Parquet?)
