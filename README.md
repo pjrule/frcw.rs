@@ -72,6 +72,7 @@ This project was originally a weekend project that lived in one `.rs` file, so i
   - [ ] Break up long/confusing functions
     - [ ] `recom::run::multi_chain`
     - [ ] `recom::random_split` _(maybe)_
+  - [ ] Enforce Rust idioms: remove `return` where possible, etc.
 - [ ] New features (definite)
   - [ ] GerryChain-like scoring system for common use cases: cut edge counts, area, perimeter, spanning tree statistics, etc.
   - [ ] Make score calculations non-blocking (allow for multiple scoring threads?)
