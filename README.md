@@ -1,4 +1,4 @@
-# [WIP] FRCW.rs
+# frcw.rs (Fastest ReCom Chain in the West) 🤠🏎🔥
 
 This is an ultra-high-performance implementation of the (reversible) [ReCom Markov chain for redistricting](https://arxiv.org/abs/1911.05725). It is intended to be used as a backend for [GerryChain.jl](https://github.com/mggg/GerryChainJulia/).
 
@@ -34,7 +34,7 @@ Running a 100,000-step [GerryChain](https://github.com/mggg/gerrychain)-like ReC
 ```sh
 ./target/release/frcw --graph-json ./VA_precincts.json \
                       --assignment-col CD_16 \
-                      --n-steps 1000000 \
+                      --n-steps 100000 \
                       --n-threads 4 \
                       --pop-col TOTPOP \
                       --rng-seed 94915664 \
@@ -45,3 +45,41 @@ Running a 100,000-step [GerryChain](https://github.com/mggg/gerrychain)-like ReC
 ```
 
 (This takes ~5.5 seconds on my 2019 quad-core i5 MacBook Pro.)
+
+## TODO
+This project was originally a weekend project that lived in one `.rs` file, so it's a bit rough around the edges. The highest priorities are adding a bunch more tests and refactoring some particularly long functions.
+
+- [x] Split into modules
+- [x] Add docstrings
+- [ ] Finish functional tests
+  - [ ] Step-level invariants test _(in progress)_
+    - [ ] Fix Crossbeam panic propagation in ReCom runner
+  - [ ] Determinism test
+  - [ ] Seed and freeze
+  - [ ] RevReCom distribution tests (integrate Mai Nguyen's Google Summer of Code project)
+- [ ] Add benchmarks _(in progress)_
+- [ ] Add unit tests
+- [ ] Set up CI/CD (test and linting)
+- [ ] Refactoring 
+  - [ ] Convert `RecomProposal` → `Proposal` and move to top level
+  - [ ] Generalize fields in `Proposal` ({a, b} → `SmallVec`s)
+  - [ ] Generalize `ChainCounts` and remove count update ugliness in the ReCom runner
+  - [ ] Rename sums → tallies for consistency with GerryChain
+  - [ ] Define type aliases (i.e. don't hardcode `u32` everywhere)
+    - [ ] Assess types: is using `u32` everywhere gaining us that much performance? What use cases might result in overflow?
+  - [ ] Safe type coercion for input JSON
+  - [ ] Sanity checks for input JSON (seed plan contiguity, seed plan population tolerance, etc.)
+  - [ ] Break up long/confusing functions
+    - [ ] `recom::run::multi_chain`
+    - [ ] `recom::random_split` _(maybe)_
+- [ ] New features (definite)
+  - [ ] GerryChain-like scoring system for common use cases: cut edge counts, area, perimeter, spanning tree statistics, etc.
+  - [ ] Make score calculations non-blocking (allow for multiple scoring threads?)
+  - [ ] Batch size and thread count autotuning
+  - [ ] Another round of performance optimizations
+  - [ ] More ReCom variants
+      - [ ] Add RMST sampling using Kruskal's algorithm/Prim's algorithm
+- [ ] New features (possible)
+  - [ ] Alternate input formats? (list of edges?)
+  - [ ] Alternate output formats? (Parquet?)
+  - [ ] Multi-member district support?
