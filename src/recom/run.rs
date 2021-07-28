@@ -12,7 +12,7 @@ use crate::buffers::{MSTBuffer, RandomRangeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
 use crate::mst::uniform_random_spanning_tree;
 use crate::partition::Partition;
-use crate::stats::{ChainCounts, StatsWriter};
+use crate::stats::{SelfLoopCounts, SelfLoopReason, StatsWriter};
 use crossbeam::scope;
 use crossbeam_channel::unbounded;
 use rand::rngs::SmallRng;
@@ -48,7 +48,7 @@ struct JobPacket {
 /// The result of a unit of multithreaded work.
 struct ResultPacket {
     /// Self-loop statistics.
-    counts: ChainCounts,
+    counts: SelfLoopCounts,
     /// ≥0 valid proposals generated within the unit of work.
     proposals: Vec<RecomProposal>,
 }
@@ -128,7 +128,7 @@ pub fn multi_chain(
                         Some(diff) => partition.update(&graph, &diff),
                         None => {}
                     }
-                    let mut counts = ChainCounts::default();
+                    let mut counts = SelfLoopCounts::default();
                     let mut proposals = Vec::<RecomProposal>::new();
                     for _ in 0..next.n_steps {
                         let (dist_a, dist_b);
@@ -139,7 +139,7 @@ pub fn multi_chain(
                             if partition.dist_adj[(dist_a * partition.num_dists as usize) + dist_b]
                                 == 0
                             {
-                                counts.non_adjacent += 1; // Self-loop.
+                                counts.inc(SelfLoopReason::NonAdjacent);
                                 continue;
                             }
                         } else {
@@ -186,14 +186,14 @@ pub fn multi_chain(
                                     if rng.gen::<f64>() < prob {
                                         proposals.push(proposal_buf.clone());
                                     } else {
-                                        counts.seam_length += 1;
+                                        counts.inc(SelfLoopReason::SeamLength);
                                     }
                                 } else {
                                     // Accept.
                                     proposals.push(proposal_buf.clone());
                                 }
                             }
-                            Err(_) => counts.no_split += 1, // TODO: break out errors?
+                            Err(_) => counts.inc(SelfLoopReason::NoSplit), // TODO: break out errors?
                         }
                     }
                     res_s
@@ -218,35 +218,25 @@ pub fn multi_chain(
             }
         }
         writer.init(graph, partition).unwrap();
-        let mut sampled = ChainCounts::default();
+        let mut sampled = SelfLoopCounts::default();
         while step <= params.num_steps {
-            let mut counts = ChainCounts::default();
+            let mut counts = SelfLoopCounts::default();
             let mut proposals = Vec::<RecomProposal>::new();
             for _ in 0..n_threads {
                 let packet: ResultPacket = result_recv.recv().unwrap();
                 counts = counts + packet.counts;
                 proposals.extend(packet.proposals);
             }
-            let loops = counts.non_adjacent + counts.no_split + counts.seam_length;
+            let mut loops = counts.sum();
             if proposals.len() > 0 {
                 // Sample events without replacement.
                 let mut total = loops + proposals.len();
                 while total > 0 {
                     step += 1;
                     let event = rng.gen_range(0..total);
-                    if event < counts.non_adjacent {
-                        sampled.non_adjacent += 1;
-                        counts.non_adjacent -= 1;
-                    } else if event >= counts.non_adjacent
-                        && event < counts.non_adjacent + counts.no_split
-                    {
-                        sampled.no_split += 1;
-                        counts.no_split -= 1;
-                    } else if event >= counts.non_adjacent + counts.no_split
-                        && event < counts.non_adjacent + counts.no_split + counts.seam_length
-                    {
-                        sampled.seam_length += 1;
-                        counts.seam_length -= 1;
+                    if event < loops {
+                        sampled.inc(counts.index_and_dec(event).unwrap());
+                        loops -= 1;
                     } else {
                         let proposal = &proposals[rng.gen_range(0..proposals.len())];
                         for job in job_sends.iter() {
@@ -259,7 +249,7 @@ pub fn multi_chain(
                         }
                         writer.step(step, &graph, &proposal, &sampled).unwrap();
                         // Reset sampled rejection stats until the next accepted step.
-                        sampled = ChainCounts::default();
+                        sampled = SelfLoopCounts::default();
                         break;
                     }
                     total -= 1;
