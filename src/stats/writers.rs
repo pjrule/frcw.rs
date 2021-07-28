@@ -1,7 +1,7 @@
 use crate::graph::Graph;
 use crate::partition::Partition;
 use crate::recom::RecomProposal;
-use crate::stats::{partition_sums, proposal_sums, SelfLoopCounts, SelfLoopReason};
+use crate::stats::{partition_sums, proposal_sums, subgraph_spanning_tree_count, SelfLoopCounts, SelfLoopReason};
 use serde_json::json;
 use std::io::Result;
 
@@ -34,6 +34,8 @@ pub struct TSVWriter {}
 pub struct JSONLWriter {
     /// Determines whether node deltas should be saved for each step.
     nodes: bool,
+    /// Determines whether to compute spanning tree counts for each step.
+    spanning_tree_counts: bool,
 }
 
 impl TSVWriter {
@@ -43,8 +45,11 @@ impl TSVWriter {
 }
 
 impl JSONLWriter {
-    pub fn new(nodes: bool) -> JSONLWriter {
-        return JSONLWriter { nodes: nodes };
+    pub fn new(nodes: bool, spanning_tree_counts: bool) -> JSONLWriter {
+        return JSONLWriter {
+            nodes: nodes,
+            spanning_tree_counts: spanning_tree_counts,
+        };
     }
 }
 
@@ -87,14 +92,18 @@ impl StatsWriter for TSVWriter {
 impl StatsWriter for JSONLWriter {
     fn init(&mut self, graph: &Graph, partition: &Partition) -> Result<()> {
         // TSV column header.
-        let stats = json!({
-            "init": {
-                "num_dists": partition.num_dists,
-                "populations": partition.dist_pops,
-                "sums": partition_sums(graph, partition)
-            }
+        let mut stats = json!({
+            "num_dists": partition.num_dists,
+            "populations": partition.dist_pops,
+            "sums": partition_sums(graph, partition)
         });
-        println!("{}", stats.to_string());
+        if self.spanning_tree_counts {
+            stats.as_object_mut().unwrap().insert(
+                "spanning_tree_counts".to_string(),
+                partition.dist_nodes.iter().map(|nodes| subgraph_spanning_tree_count(graph, nodes)).collect()
+            );
+        }
+        println!("{}", json!({ "init": stats }).to_string());
         return Ok(());
     }
 
@@ -110,12 +119,19 @@ impl StatsWriter for JSONLWriter {
             "dists": (proposal.a_label, proposal.b_label),
             "populations": (proposal.a_pop, proposal.b_pop),
             "sums": proposal_sums(graph, proposal),
-            "counts": counts
+            "counts": counts,
         });
         if self.nodes {
             step.as_object_mut().unwrap().insert(
                 "nodes".to_string(),
                 json!((proposal.a_nodes.clone(), proposal.b_nodes.clone())),
+            );
+        }
+        if self.spanning_tree_counts {
+            step.as_object_mut().unwrap().insert(
+                "spanning_tree_counts".to_string(),
+                json!((subgraph_spanning_tree_count(graph, &proposal.a_nodes),
+                       subgraph_spanning_tree_count(graph, &proposal.b_nodes)))
             );
         }
         println!("{}", json!({ "step": step }).to_string());

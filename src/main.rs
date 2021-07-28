@@ -100,6 +100,10 @@ fn main() {
                 .multiple(true)
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("spanning_tree_counts")
+                .long("st-counts")
+        )
         .get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
@@ -116,6 +120,7 @@ fn main() {
     let assignment_col = matches.value_of("assignment_col").unwrap();
     let variant_str = matches.value_of("variant").unwrap();
     let writer_str = matches.value_of("writer").unwrap();
+    let st_counts = matches.is_present("spanning_tree_counts");
     let sum_cols = matches
         .values_of("sum_cols")
         .unwrap_or_default()
@@ -130,8 +135,8 @@ fn main() {
     };
     let writer: Box<dyn StatsWriter> = match writer_str {
         "tsv" => Box::new(TSVWriter::new()),
-        "jsonl" => Box::new(JSONLWriter::new(false)),
-        "jsonl-full" => Box::new(JSONLWriter::new(true)),
+        "jsonl" => Box::new(JSONLWriter::new(false, st_counts)),
+        "jsonl-full" => Box::new(JSONLWriter::new(true, st_counts)),
         bad => panic!("Parameter error: invalid writer '{}'", bad),
     };
     if variant == RecomVariant::Reversible && balance_ub == 0 {
