@@ -247,7 +247,7 @@ pub fn multi_chain(
                             })
                             .unwrap();
                         }
-                        writer.step(step, &graph, &proposal, &sampled).unwrap();
+                        writer.step(step, &graph, &partition, &proposal, &sampled).unwrap();
                         // Reset sampled rejection stats until the next accepted step.
                         sampled = SelfLoopCounts::default();
                         break;

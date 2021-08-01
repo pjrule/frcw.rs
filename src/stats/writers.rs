@@ -12,11 +12,13 @@ pub trait StatsWriter {
     /// Prints data from the initial partition.
     fn init(&mut self, graph: &Graph, partition: &Partition) -> Result<()>;
 
-    /// Prints deltas generated from an accepted proposal.
+    /// Prints deltas generated from an accepted proposal
+    /// which has been applied to `partition`.
     fn step(
         &mut self,
         step: u64,
         graph: &Graph,
+        partition: &Partition,
         proposal: &RecomProposal,
         counts: &SelfLoopCounts,
     ) -> Result<()>;
@@ -65,6 +67,7 @@ impl StatsWriter for TSVWriter {
         &mut self,
         step: u64,
         _graph: &Graph,
+        _partition: &Partition,
         proposal: &RecomProposal,
         counts: &SelfLoopCounts,
     ) -> Result<()> {
@@ -111,6 +114,7 @@ impl StatsWriter for JSONLWriter {
         &mut self,
         step: u64,
         graph: &Graph,
+        _partition: &Partition,
         proposal: &RecomProposal,
         counts: &SelfLoopCounts,
     ) -> Result<()> {
