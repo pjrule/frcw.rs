@@ -201,7 +201,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_rect_grid_1x1() {
+    fn rect_grid_1x1() {
         let grid = Graph::rect_grid(1, 1);
         assert_eq!(grid.edges.len(), 0);
         assert_eq!(grid.pops, vec![1 as u32]);
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rect_grid_2x2() {
+    fn rect_grid_2x2() {
         /*
          * 1 - 3
          * |   |
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rect_grid_3x2() {
+    fn rect_grid_3x2() {
         /*
          * 1 - 3 - 5
          * |   |   |
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_edge_list_3x2() {
+    fn from_edge_list_3x2() {
         // The same graph used in `test_rect_grid_3x2`, but as a shuffled edge list.
         let edge_list = "6 5\n3 5\n4 6\n1 2\n4 2\n3 4\n1 3";
         let pops = "1 2 3 4 5 6";
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_edge_list_disconnected() {
+    fn from_edge_list_disconnected() {
         let edge_list = "1 2\n3 4";
         let pops = "1 2 3 4";
         let grid = Graph::from_edge_list(edge_list, pops).unwrap();
@@ -319,49 +319,49 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "Duplicate edge: 1 2")]
-    fn test_from_edge_list_duplicate_edge() {
+    fn from_edge_list_duplicate_edge() {
         Graph::from_edge_list("1 2\n1 2", "1 2").unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Invalid line in edge list: 1,2")]
-    fn test_from_edge_list_invalid_edge_list() {
+    fn from_edge_list_invalid_edge_list() {
         Graph::from_edge_list("1,2\n2 3", "1 2").unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Edges must be 1-indexed")]
-    fn test_from_edge_list_zero_indexed() {
+    fn from_edge_list_zero_indexed() {
         Graph::from_edge_list("0 1\n1 2", "1 2").unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Could not parse edge index: a")]
-    fn test_from_edge_list_invalid_left_edge_index() {
+    fn from_edge_list_invalid_left_edge_index() {
         Graph::from_edge_list("1 2\na 3", "1 2").unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Could not parse edge index: a")]
-    fn test_from_edge_list_invalid_right_edge_index() {
+    fn from_edge_list_invalid_right_edge_index() {
         Graph::from_edge_list("1 2\n3 a", "1 2").unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Empty edge list")]
-    fn test_from_edge_list_empty_edge_list() {
+    fn from_edge_list_empty_edge_list() {
         Graph::from_edge_list("", "").unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Could not parse population value: a")]
-    fn test_from_edge_list_invalid_population_value() {
+    fn from_edge_list_invalid_population_value() {
         Graph::from_edge_list("1 2\n2 3", "1 a").unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Mismatch: edge list has 3 nodes, population list has 2 nodes")]
-    fn test_from_edge_list_length_mismatch() {
+    fn from_edge_list_length_mismatch() {
         Graph::from_edge_list("1 2\n2 3", "1 2").unwrap();
     }
 }

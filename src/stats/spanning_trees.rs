@@ -42,7 +42,7 @@ pub fn subgraph_spanning_tree_count(graph: &Graph, nodes: &Vec<usize>) -> MatEl 
         return 1.0; // special case: single node
     }
     let lap = subgraph_laplacian(graph, nodes);
-    let (ev, _) = lap.clone().eig().unwrap();
+    let ev = lap.clone().eigvals().unwrap();
     let prod = ev
         .iter()
         .map(|&n| n.re)
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
-    fn test_subgraph_laplacian_2x2() {
+    fn subgraph_laplacian_2x2() {
         let expected = arr2(
             &[[ 2., -1., -1.,  0.],
               [-1.,  2.,  0., -1.],
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
-    fn test_subgraph_laplacian_3x2() {
+    fn subgraph_laplacian_3x2() {
         let expected = arr2(
             &[[ 2., -1., -1.,  0.,  0.,  0.],
               [-1.,  2.,  0., -1.,  0.,  0.],
@@ -86,7 +86,7 @@ mod tests {
 
     #[rstest]
     #[rustfmt::skip]
-    fn test_subgraph_spanning_tree_count_square_grids(
+    fn subgraph_spanning_tree_count_square_grids(
         #[values((1, 1.), (2, 4.), (3, 192.), (4, 100352.), (5, 557568000.),
                  (6, 32565539635200.), (7, 19872369301840986112.),
                  (8, 126231322912498539682594816.),
