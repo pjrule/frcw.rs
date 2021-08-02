@@ -310,13 +310,7 @@ mod tests {
         let edge_list = "1 2\n3 4";
         let pops = "1 2 3 4";
         let grid = Graph::from_edge_list(edge_list, pops).unwrap();
-        assert_eq!(
-            grid.edges,
-            vec![
-                Edge(0, 1),
-                Edge(2, 3)
-            ]
-        );
+        assert_eq!(grid.edges, vec![Edge(0, 1), Edge(2, 3)]);
         assert_eq!(grid.pops, vec![1, 2, 3, 4]);
         assert_eq!(grid.edges_start, vec![0, 1, 1, 2]);
         assert_eq!(grid.total_pop, 10);
