@@ -41,7 +41,12 @@ impl Partition {
         for &node in proposal.b_nodes.iter() {
             self.assignments[node] = proposal.b_label as u32;
         }
+        self.update_derived(graph);
+    }
 
+    /// Updates properties derived from the partition's assignments
+    /// (cut edges list, district adjacency matrix).
+    fn update_derived(&mut self, graph: &Graph) {
         // Recompute adjacency/cut edges.
         let mut dist_adj = vec![0 as u32; (self.num_dists * self.num_dists) as usize];
         let mut cut_edges = Vec::<usize>::new();
@@ -102,5 +107,133 @@ impl Partition {
             buf.graph.pops.push(graph.pops[node]);
         }
         buf.graph.total_pop = self.dist_pops[a] + self.dist_pops[b];
+    }
+
+    /// Builds a partition from a 1-indexed assignment vector.
+    pub fn from_assignments(graph: &Graph, assignments: &Vec<u32>) -> Result<Partition, String> {
+        match assignments.iter().min() {
+            None => return Err("Empty assignment vector".to_string()),
+            Some(1) => (),
+            Some(_) => return Err("Assignments must be 1-indexed".to_string()),
+        };
+
+        if assignments.len() != graph.neighbors.len() {
+            return Err(
+                format!("Mismatch: graph has {} nodes, assignment vector has {} nodes",
+                        graph.neighbors.len(),
+                        assignments.len()
+                ));
+        }
+
+        let num_dists = *assignments.iter().max().unwrap(); // guaranteed nonempty
+        let mut dist_nodes = vec![Vec::<usize>::new(); num_dists as usize];
+        let mut dist_pops = vec![0 as u32; num_dists as usize];
+        let assignments_zeroed = assignments.iter().map(|a| a - 1).collect::<Vec<u32>>();
+        for (node, &assignment) in assignments_zeroed.iter().enumerate() {
+            dist_nodes[assignment as usize].push(node);
+            dist_pops[assignment as usize] += graph.pops[node];
+        }
+        for (dist, nodes) in dist_nodes.iter().enumerate() {
+            if nodes.is_empty() {
+                return Err(format!("District {} has no nodes", dist + 1));
+            }
+        }
+        let mut partition  = Partition {
+            num_dists: num_dists,
+            assignments: assignments_zeroed,
+            cut_edges: Vec::<usize>::new(), // derived
+            dist_adj: Vec::<u32>::new(), // derived
+            dist_pops: dist_pops,
+            dist_nodes: dist_nodes,
+        };
+        partition.update_derived(graph);
+        Ok(partition)
+    }
+
+    /// Builds a partition from a space-delimited string representing a
+    /// 1-indexed assignment vector.
+    pub fn from_assignment_str(graph: &Graph, assignments: &str) -> Result<Partition, String> {
+        match assignments.split(' ').map(|a| a.parse::<u32>()).collect() {
+            Ok(vec) => Partition::from_assignments(graph, &vec),
+            Err(_) => return Err("Could not parse assignments".to_string()),
+        }
+    }
+}
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_assignments_rect_grid_2x2() {
+        let grid = Graph::rect_grid(2, 2);
+        let assignments = vec![1, 1, 1, 2];
+        let partition = Partition::from_assignments(&grid, &assignments).unwrap();
+        assert_eq!(partition.num_dists, 2);
+        assert_eq!(partition.assignments, vec![0, 0, 0, 1]);
+        assert_eq!(partition.dist_pops, vec![3, 1]);
+        assert_eq!(partition.dist_nodes, vec![vec![0, 1, 2], vec![3]]);
+        assert_eq!(partition.dist_adj, vec![0, 2, 2, 0]);
+        assert_eq!(partition.cut_edges, vec![2, 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Assignments must be 1-indexed")]
+    fn from_assignments_zero_indexed() {
+        let grid = Graph::rect_grid(2, 2);
+        let assignments = vec![0, 0, 0, 1];
+        Partition::from_assignments(&grid, &assignments).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Assignments must be 1-indexed")]
+    fn from_assignments_two_indexed() {
+        let grid = Graph::rect_grid(2, 2);
+        let assignments = vec![2, 2, 2, 3];
+        Partition::from_assignments(&grid, &assignments).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "District 2 has no nodes")]
+    fn from_assignments_missing_district() {
+        let grid = Graph::rect_grid(2, 2);
+        let assignments = vec![1, 1, 1, 3];
+        Partition::from_assignments(&grid, &assignments).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Mismatch: graph has 4 nodes, assignment vector has 3 nodes")]
+    fn from_assignments_length_mismatch() {
+        let grid = Graph::rect_grid(2, 2);
+        let assignments = vec![1, 1, 3];
+        Partition::from_assignments(&grid, &assignments).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Empty assignment vector")]
+    fn from_assignments_empty() {
+        let grid = Graph::rect_grid(2, 2);
+        let assignments = vec![];
+        Partition::from_assignments(&grid, &assignments).unwrap();
+    }
+
+    #[test]
+    fn from_assignment_str_rect_grid_2x2() {
+        let grid = Graph::rect_grid(2, 2);
+        let assignments = "1 1 1 2";
+        let partition = Partition::from_assignment_str(&grid, &assignments).unwrap();
+        assert_eq!(partition.num_dists, 2);
+        assert_eq!(partition.assignments, vec![0, 0, 0, 1]);
+        assert_eq!(partition.dist_pops, vec![3, 1]);
+        assert_eq!(partition.dist_nodes, vec![vec![0, 1, 2], vec![3]]);
+        assert_eq!(partition.dist_adj, vec![0, 2, 2, 0]);
+        assert_eq!(partition.cut_edges, vec![2, 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Could not parse assignments")]
+    fn from_assignment_str_bad_char() {
+        let grid = Graph::rect_grid(2, 2);
+        let assignments = "1 1 1 a";
+        Partition::from_assignment_str(&grid, &assignments).unwrap();
     }
 }
