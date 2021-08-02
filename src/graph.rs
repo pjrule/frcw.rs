@@ -1,8 +1,9 @@
 //! A lightweight graph with population metadata.
+use std::cmp::{max, min};
 use std::collections::HashMap;
 
 /// Edges are pairs of node indices.
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub struct Edge(pub usize, pub usize);
 
 /// A lightweight graph with population metadata.
@@ -39,6 +40,100 @@ impl Graph {
             total_pop: 0,
             attr: HashMap::new(),
         }
+    }
+
+    /// Initializes a graph from a newline-delimited edge list format representation.
+    ///
+    /// Arguments:
+    ///   * `edge_list`: The list of edges in the graph. Each line contains
+    ///     two indices delimited by a space. Nodes are assumed to be labeled
+    ///     1..n, where n is the largest index that appears in the edge list.
+    ///     No edge ordering is assumed.
+    ///   * `populations`: The integer population of each node in the graph,
+    ///     in index order.
+    ///
+    /// If the edge list or populations cannot be parsed, or if the number
+    /// of nodes is inconsistent between `edge_lists` and `populations`,
+    /// and `Err` is returned. Empty graphs are considered invalid, as are
+    /// graphs with duplicate edges.
+    ///
+    /// The caller is responsible for ensuring the graph is connected
+    /// (if that property is desired).
+    pub fn from_edge_list(edge_list: &str, populations: &str) -> Result<Graph, String> {
+        let mut edges = Vec::<Edge>::new();
+        let mut n = 0;
+        if edge_list.is_empty() {
+            return Err("Empty edge list".to_string());
+        }
+        for line in edge_list.split('\n') {
+            let indices: Vec<&str> = line.split(' ').collect();
+            if indices.len() != 2 {
+                return Err(format!("Invalid line in edge list: {}", line));
+            }
+            let src = match indices[0].parse::<usize>() {
+                Ok(idx) => idx,
+                Err(_) => return Err(format!("Could not parse edge index: {}", indices[0])),
+            };
+            let dst = match indices[1].parse::<usize>() {
+                Ok(idx) => idx,
+                Err(_) => return Err(format!("Could not parse edge index: {}", indices[1])),
+            };
+            if src == 0 || dst == 0 {
+                return Err("Edges must be 1-indexed".to_string());
+            }
+            // convert to 0-indexing
+            let edge = Edge(min(src, dst) - 1, max(src, dst) - 1);
+            n = max(n, edge.1 + 1);
+            edges.push(edge);
+        }
+        edges.sort();
+        let mut edges_start = Vec::<usize>::new();
+        let mut neighbors = vec![Vec::<usize>::new(); n];
+        let mut src = edges[0].0;
+        edges_start.push(0);
+        for (idx, edge) in edges.iter().enumerate() {
+            println!("{}\t {} {}", idx, edge.0, edge.1);
+            if edge.0 != src {
+                // Handle implicit nodes with no edges.
+                for _ in src..edge.0 {
+                    edges_start.push(idx);
+                }
+                src = edge.0;
+            }
+            if neighbors[edge.0].contains(&edge.1) {
+                return Err(format!("Duplicate edge: {} {}", edge.0 + 1, edge.1 + 1));
+            }
+            neighbors[edge.0].push(edge.1);
+            neighbors[edge.1].push(edge.0);
+        }
+        // Handle implicit nodes with no edges.
+        for _ in src..n - 1 {
+            edges_start.push(edges.len());
+        }
+
+        let mut parsed_pops = Vec::<u32>::with_capacity(neighbors.len());
+        for pop in populations.split(' ') {
+            match pop.parse::<u32>() {
+                Ok(parsed) => parsed_pops.push(parsed),
+                Err(_) => return Err(format!("Could not parse population value: {}", pop)),
+            }
+        }
+        if parsed_pops.len() != neighbors.len() {
+            return Err(format!(
+                "Mismatch: edge list has {} nodes, population list has {} nodes",
+                neighbors.len(),
+                parsed_pops.len()
+            ));
+        }
+
+        Ok(Graph {
+            total_pop: parsed_pops.iter().sum(),
+            pops: parsed_pops,
+            neighbors: neighbors,
+            edges: edges,
+            edges_start: edges_start,
+            attr: HashMap::new(),
+        })
     }
 
     /// Returns an nXm rectangular grid graph with unit population at each node.
@@ -173,5 +268,106 @@ mod tests {
         assert_eq!(grid.edges_start, vec![0, 2, 3, 5, 6, 7]);
         assert_eq!(grid.total_pop, 6);
         assert_eq!(grid.attr.len(), 0);
+    }
+
+    #[test]
+    fn test_from_edge_list_3x2() {
+        // The same graph used in `test_rect_grid_3x2`, but as a shuffled edge list.
+        let edge_list = "6 5\n3 5\n4 6\n1 2\n4 2\n3 4\n1 3";
+        let pops = "1 2 3 4 5 6";
+        let grid = Graph::from_edge_list(edge_list, pops).unwrap();
+        assert_eq!(
+            grid.edges,
+            vec![
+                Edge(0, 1),
+                Edge(0, 2),
+                Edge(1, 3),
+                Edge(2, 3),
+                Edge(2, 4),
+                Edge(3, 5),
+                Edge(4, 5)
+            ]
+        );
+        assert_eq!(grid.pops, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            grid.neighbors,
+            vec![
+                vec![1, 2],
+                vec![0, 3],
+                vec![0, 3, 4],
+                vec![1, 2, 5],
+                vec![2, 5],
+                vec![3, 4]
+            ]
+        );
+        assert_eq!(grid.edges_start, vec![0, 2, 3, 5, 6, 7]);
+        assert_eq!(grid.total_pop, 21);
+        assert_eq!(grid.attr.len(), 0);
+    }
+
+    #[test]
+    fn test_from_edge_list_disconnected() {
+        let edge_list = "1 2\n3 4";
+        let pops = "1 2 3 4";
+        let grid = Graph::from_edge_list(edge_list, pops).unwrap();
+        assert_eq!(
+            grid.edges,
+            vec![
+                Edge(0, 1),
+                Edge(2, 3)
+            ]
+        );
+        assert_eq!(grid.pops, vec![1, 2, 3, 4]);
+        assert_eq!(grid.edges_start, vec![0, 1, 1, 2]);
+        assert_eq!(grid.total_pop, 10);
+        assert_eq!(grid.attr.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Duplicate edge: 1 2")]
+    fn test_from_edge_list_duplicate_edge() {
+        Graph::from_edge_list("1 2\n1 2", "1 2").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid line in edge list: 1,2")]
+    fn test_from_edge_list_invalid_edge_list() {
+        Graph::from_edge_list("1,2\n2 3", "1 2").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Edges must be 1-indexed")]
+    fn test_from_edge_list_zero_indexed() {
+        Graph::from_edge_list("0 1\n1 2", "1 2").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Could not parse edge index: a")]
+    fn test_from_edge_list_invalid_left_edge_index() {
+        Graph::from_edge_list("1 2\na 3", "1 2").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Could not parse edge index: a")]
+    fn test_from_edge_list_invalid_right_edge_index() {
+        Graph::from_edge_list("1 2\n3 a", "1 2").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Empty edge list")]
+    fn test_from_edge_list_empty_edge_list() {
+        Graph::from_edge_list("", "").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Could not parse population value: a")]
+    fn test_from_edge_list_invalid_population_value() {
+        Graph::from_edge_list("1 2\n2 3", "1 a").unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Mismatch: edge list has 3 nodes, population list has 2 nodes")]
+    fn test_from_edge_list_length_mismatch() {
+        Graph::from_edge_list("1 2\n2 3", "1 2").unwrap();
     }
 }
