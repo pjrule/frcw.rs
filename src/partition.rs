@@ -118,11 +118,11 @@ impl Partition {
         };
 
         if assignments.len() != graph.neighbors.len() {
-            return Err(
-                format!("Mismatch: graph has {} nodes, assignment vector has {} nodes",
-                        graph.neighbors.len(),
-                        assignments.len()
-                ));
+            return Err(format!(
+                "Mismatch: graph has {} nodes, assignment vector has {} nodes",
+                graph.neighbors.len(),
+                assignments.len()
+            ));
         }
 
         let num_dists = *assignments.iter().max().unwrap(); // guaranteed nonempty
@@ -138,11 +138,11 @@ impl Partition {
                 return Err(format!("District {} has no nodes", dist + 1));
             }
         }
-        let mut partition  = Partition {
+        let mut partition = Partition {
             num_dists: num_dists,
             assignments: assignments_zeroed,
             cut_edges: Vec::<usize>::new(), // derived
-            dist_adj: Vec::<u32>::new(), // derived
+            dist_adj: Vec::<u32>::new(),    // derived
             dist_pops: dist_pops,
             dist_nodes: dist_nodes,
         };
