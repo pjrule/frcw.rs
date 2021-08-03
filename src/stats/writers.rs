@@ -1,7 +1,9 @@
 use crate::graph::Graph;
 use crate::partition::Partition;
 use crate::recom::RecomProposal;
-use crate::stats::{partition_sums, proposal_sums, subgraph_spanning_tree_count, SelfLoopCounts, SelfLoopReason};
+use crate::stats::{
+    partition_sums, proposal_sums, subgraph_spanning_tree_count, SelfLoopCounts, SelfLoopReason,
+};
 use serde_json::json;
 use std::io::Result;
 
@@ -32,6 +34,10 @@ pub trait StatsWriter {
 /// initial partition.
 pub struct TSVWriter {}
 
+/// Writes assignments in space-delimited format (with step number prefix).
+pub struct AssignmentsOnlyWriter {}
+
+
 /// Writes statistics in JSONL (JSON Lines) format.
 pub struct JSONLWriter {
     /// Determines whether node deltas should be saved for each step.
@@ -43,6 +49,12 @@ pub struct JSONLWriter {
 impl TSVWriter {
     pub fn new() -> TSVWriter {
         return TSVWriter {};
+    }
+}
+
+impl AssignmentsOnlyWriter {
+    pub fn new() -> AssignmentsOnlyWriter {
+        return AssignmentsOnlyWriter {};
     }
 }
 
@@ -60,7 +72,7 @@ impl StatsWriter for TSVWriter {
         // TSV column header.
         print!("step\tnon_adjacent\tno_split\tseam_length\ta_label\tb_label\t");
         println!("a_pop\tb_pop\ta_nodes\tb_nodes");
-        return Ok(());
+        Ok(())
     }
 
     fn step(
@@ -84,11 +96,11 @@ impl StatsWriter for TSVWriter {
             proposal.a_nodes,
             proposal.b_nodes
         );
-        return Ok(());
+        Ok(())
     }
 
     fn close(&mut self) -> Result<()> {
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -103,11 +115,15 @@ impl StatsWriter for JSONLWriter {
         if self.spanning_tree_counts {
             stats.as_object_mut().unwrap().insert(
                 "spanning_tree_counts".to_string(),
-                partition.dist_nodes.iter().map(|nodes| subgraph_spanning_tree_count(graph, nodes)).collect()
+                partition
+                    .dist_nodes
+                    .iter()
+                    .map(|nodes| subgraph_spanning_tree_count(graph, nodes))
+                    .collect(),
             );
         }
         println!("{}", json!({ "init": stats }).to_string());
-        return Ok(());
+        Ok(())
     }
 
     fn step(
@@ -134,15 +150,40 @@ impl StatsWriter for JSONLWriter {
         if self.spanning_tree_counts {
             step.as_object_mut().unwrap().insert(
                 "spanning_tree_counts".to_string(),
-                json!((subgraph_spanning_tree_count(graph, &proposal.a_nodes),
-                       subgraph_spanning_tree_count(graph, &proposal.b_nodes)))
+                json!((
+                    subgraph_spanning_tree_count(graph, &proposal.a_nodes),
+                    subgraph_spanning_tree_count(graph, &proposal.b_nodes)
+                )),
             );
         }
         println!("{}", json!({ "step": step }).to_string());
-        return Ok(());
+        Ok(())
     }
 
     fn close(&mut self) -> Result<()> {
-        return Ok(());
+        Ok(())
+    }
+}
+
+impl StatsWriter for AssignmentsOnlyWriter {
+    fn init(&mut self, _graph: &Graph, partition: &Partition) -> Result<()> {
+        println!("0,{:?}", partition.assignments);
+        Ok(())
+    }
+
+    fn step(
+        &mut self,
+        step: u64,
+        _graph: &Graph,
+        partition: &Partition,
+        _proposal: &RecomProposal,
+        _counts: &SelfLoopCounts,
+    ) -> Result<()> {
+        println!("{},{:?}", step, partition.assignments);
+        Ok(())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
     }
 }
