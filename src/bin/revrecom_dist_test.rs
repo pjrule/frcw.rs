@@ -11,7 +11,7 @@ use frcw::graph::Graph;
 use frcw::partition::Partition;
 use frcw::recom::run::multi_chain;
 use frcw::recom::{RecomParams, RecomVariant};
-use frcw::stats::{StatsWriter, AssignmentsOnlyWriter};
+use frcw::stats::{AssignmentsOnlyWriter, StatsWriter};
 use std::fs::read_to_string;
 
 fn main() {
@@ -24,21 +24,21 @@ fn main() {
                 .long("graph-file")
                 .takes_value(true)
                 .required(true)
-                .help("The path of the dual graph (in edge list format).")
+                .help("The path of the dual graph (in edge list format)."),
         )
         .arg(
             Arg::with_name("pop_file")
-            .long("pop-file")
-            .takes_value(true)
-            .required(true)
-            .help("The path of the population file for the dual graph.")
+                .long("pop-file")
+                .takes_value(true)
+                .required(true)
+                .help("The path of the population file for the dual graph."),
         )
         .arg(
             Arg::with_name("assignment_file")
-            .long("assignment-file")
-            .takes_value(true)
-            .required(true)
-            .help("The path of the seed plan assignment for the dual graph.")
+                .long("assignment-file")
+                .takes_value(true)
+                .required(true)
+                .help("The path of the seed plan assignment for the dual graph."),
         )
         .arg(
             Arg::with_name("n_steps")
@@ -82,8 +82,9 @@ fn main() {
                 .takes_value(true)
                 .required(true)
                 .help("The number of proposals per batch job."),
-        ).get_matches();
-       
+        )
+        .get_matches();
+
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
     let tol = value_t!(matches.value_of("tol"), f64).unwrap_or_else(|e| e.exit());
@@ -99,8 +100,8 @@ fn main() {
 
     let graph_data = read_to_string(graph_path).expect("Could not read edge list file");
     let pop_data = read_to_string(pop_path).expect("Could not read population file");
-    let assignments_data = read_to_string(assignments_path).expect(
-        "Could not read assignment file");
+    let assignments_data =
+        read_to_string(assignments_path).expect("Could not read assignment file");
 
     let graph = Graph::from_edge_list(&graph_data, &pop_data).unwrap();
     let partition = Partition::from_assignment_str(&graph, &assignments_data).unwrap();
@@ -110,7 +111,7 @@ fn main() {
         max_pop: ((1.0 + tol) * avg_pop as f64).ceil() as u32,
         num_steps: n_steps,
         rng_seed: rng_seed,
-        balance_ub: balance_ub, 
+        balance_ub: balance_ub,
         variant: RecomVariant::Reversible,
     };
     let writer: Box<dyn StatsWriter> = Box::new(AssignmentsOnlyWriter::new());

@@ -4,8 +4,6 @@ version = "0.1.0"
 authors = ["Parker J. Rule <parker.rule@tufts.edu>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 serde = { version = "1.0.64", features = ["derive"] }
 serde_json = "1.0.64"
@@ -15,14 +13,19 @@ mimalloc = { version = "0.1.25", default-features = false }
 crossbeam-channel = "0.5.0"
 crossbeam = "0.8.0"
 sha3 = "0.9.1"
-ndarray = "0.14"
-ndarray-linalg = { version = "0.13", features = ["openblas-system"] }
+ndarray = { version = "0.14", optional = true }
+ndarray-linalg = { version = "0.13", features = ["openblas-system"], optional = true }
 
 [dev-dependencies]
 rstest = "0.10.0"
 criterion = "0.3"
 approx = "0.5.0"
 test_fixtures = { path = "test_fixtures" }
+
+[features]
+# Enables spanning tree statistics (and eventually other features
+# that depend on a working BLAS installation).
+linalg = ["ndarray", "ndarray-linalg"]
 
 [[bench]]
 name = "recom"

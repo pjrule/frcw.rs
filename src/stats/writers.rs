@@ -1,10 +1,10 @@
 use crate::graph::Graph;
 use crate::partition::Partition;
 use crate::recom::RecomProposal;
-use crate::stats::{
-    partition_sums, proposal_sums, subgraph_spanning_tree_count, SelfLoopCounts, SelfLoopReason,
-};
-use serde_json::json;
+#[cfg(feature = "linalg")]
+use crate::stats::subgraph_spanning_tree_count;
+use crate::stats::{partition_sums, proposal_sums, SelfLoopCounts, SelfLoopReason};
+use serde_json::{json, Value};
 use std::io::Result;
 
 /// A standard interface for writing steps and statistics to stdout.
@@ -37,7 +37,6 @@ pub struct TSVWriter {}
 /// Writes assignments in space-delimited format (with step number prefix).
 pub struct AssignmentsOnlyWriter {}
 
-
 /// Writes statistics in JSONL (JSON Lines) format.
 pub struct JSONLWriter {
     /// Determines whether node deltas should be saved for each step.
@@ -65,6 +64,39 @@ impl JSONLWriter {
             spanning_tree_counts: spanning_tree_counts,
         };
     }
+
+    #[cfg(feature = "linalg")]
+    /// Adds initial spanning tree count statistics to `stats`.
+    fn init_spanning_tree_counts(graph: &Graph, partition: &Partition, stats: &mut Value) {
+        stats.as_object_mut().unwrap().insert(
+            "spanning_tree_counts".to_string(),
+            partition
+                .dist_nodes
+                .iter()
+                .map(|nodes| subgraph_spanning_tree_count(graph, nodes))
+                .collect(),
+        );
+    }
+
+    #[cfg(not(feature = "linalg"))]
+    /// Dummy function---spanning tree counts depend on linear algebra libraries.
+    fn init_spanning_tree_counts(_graph: &Graph, _partition: &Partition, _stats: &mut Value) {}
+
+    #[cfg(feature = "linalg")]
+    /// Adds step spanning tree count statistics to `stats`.
+    fn step_spanning_tree_counts(graph: &Graph, proposal: &RecomProposal, stats: &mut Value) {
+        stats.as_object_mut().unwrap().insert(
+            "spanning_tree_counts".to_string(),
+            json!((
+                subgraph_spanning_tree_count(graph, &proposal.a_nodes),
+                subgraph_spanning_tree_count(graph, &proposal.b_nodes)
+            )),
+        );
+    }
+
+    #[cfg(not(feature = "linalg"))]
+    /// Dummy function---spanning tree counts depend on linear algebra libraries.
+    fn step_spanning_tree_counts(_graph: &Graph, _proposal: &RecomProposal, _stats: &mut Value) {}
 }
 
 impl StatsWriter for TSVWriter {
@@ -113,14 +145,7 @@ impl StatsWriter for JSONLWriter {
             "sums": partition_sums(graph, partition)
         });
         if self.spanning_tree_counts {
-            stats.as_object_mut().unwrap().insert(
-                "spanning_tree_counts".to_string(),
-                partition
-                    .dist_nodes
-                    .iter()
-                    .map(|nodes| subgraph_spanning_tree_count(graph, nodes))
-                    .collect(),
-            );
+            JSONLWriter::init_spanning_tree_counts(graph, partition, &mut stats);
         }
         println!("{}", json!({ "init": stats }).to_string());
         Ok(())
@@ -148,13 +173,7 @@ impl StatsWriter for JSONLWriter {
             );
         }
         if self.spanning_tree_counts {
-            step.as_object_mut().unwrap().insert(
-                "spanning_tree_counts".to_string(),
-                json!((
-                    subgraph_spanning_tree_count(graph, &proposal.a_nodes),
-                    subgraph_spanning_tree_count(graph, &proposal.b_nodes)
-                )),
-            );
+            JSONLWriter::step_spanning_tree_counts(graph, proposal, &mut step);
         }
         println!("{}", json!({ "step": step }).to_string());
         Ok(())

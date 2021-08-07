@@ -161,6 +161,7 @@ impl Partition {
 }
 
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]

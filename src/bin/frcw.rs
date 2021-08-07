@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::{fs, io};
 
 fn main() {
-    let matches = App::new("frcw")
+    let mut cli = App::new("frcw")
         .version("0.1.0")
         .author("Parker J. Rule <parker.rule@tufts.edu>")
         .about("A minimal implementation of the ReCom Markov chain")
@@ -99,9 +99,11 @@ fn main() {
                 .long("sum-cols")
                 .multiple(true)
                 .takes_value(true),
-        )
-        .arg(Arg::with_name("spanning_tree_counts").long("st-counts"))
-        .get_matches();
+        );
+    if cfg!(feature = "linalg") {
+        cli = cli.arg(Arg::with_name("spanning_tree_counts").long("st-counts"));
+    }
+    let matches = cli.get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
     let tol = value_t!(matches.value_of("tol"), f64).unwrap_or_else(|e| e.exit());
