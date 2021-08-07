@@ -39,12 +39,25 @@ pub enum RecomVariant {
     /// Reversible ReCom.
     Reversible,
     /// Normal (non-reversible) ReCom with district pairs selected by
-    /// choosing a random cut edge.
-    CutEdges,
+    /// choosing a random cut edge. Spanning trees are sampled from
+    /// the uniform distribution.
+    CutEdgesUST,
     /// Normal (non-reversible) ReCom with district pairs selected by
     /// choosing random pairs of district indices until an adjacent pair
-    /// is found. Non-adjacent pairs are self-loops.
-    DistrictPairs,
+    /// is found. Non-adjacent pairs are self-loops. Spanning trees are
+    /// sampled from the uniform distribution.
+    DistrictPairsUST,
+    /// Normal (non-reversible) ReCom with district pairs selected by
+    /// choosing a random cut edge. Spanning trees are sampled by drawing
+    /// edge weights uniformly at random and finding the minimum spanning
+    /// tree.
+    CutEdgesRMST,
+    /// Normal (non-reversible) ReCom with district pairs selected by
+    /// choosing random pairs of district indices until an adjacent pair
+    /// is found. Non-adjacent pairs are self-loops. Spanning trees are
+    /// sampled by drawing edge weights uniformly at random and finding
+    /// the minimum spanning tree.
+    DistrictPairsRMST
 }
 
 /// The parameters of a ReCom chain run.

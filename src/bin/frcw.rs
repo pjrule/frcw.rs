@@ -128,8 +128,10 @@ fn main() {
 
     let variant = match variant_str {
         "reversible" => RecomVariant::Reversible,
-        "cut_edges" => RecomVariant::CutEdges,
-        "district_pairs" => RecomVariant::DistrictPairs,
+        "cut-edges-ust" => RecomVariant::CutEdgesUST,
+        "cut-edges-rmst" => RecomVariant::CutEdgesRMST,
+        "district-pairs-ust" => RecomVariant::DistrictPairsUST,
+        "district-pairs-rmst" => RecomVariant::DistrictPairsRMST,
         bad => panic!("Parameter error: invalid variant '{}'", bad),
     };
     let writer: Box<dyn StatsWriter> = match writer_str {

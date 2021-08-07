@@ -8,9 +8,9 @@
 //! is multithreaded and prints accepted proposals to `stdout` in TSV format.
 //! It also collects rejection/self-loop statistics.
 use super::{random_split, RecomParams, RecomProposal, RecomVariant};
-use crate::buffers::{MSTBuffer, RandomRangeBuffer, SplitBuffer, SubgraphBuffer};
+use crate::buffers::{MSTBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
-use crate::mst::uniform_random_spanning_tree;
+use crate::mst::{SpanningTreeSampler, USTSampler, RMSTSampler};
 use crate::partition::Partition;
 use crate::stats::{SelfLoopCounts, SelfLoopReason, StatsWriter};
 use crossbeam::scope;
@@ -102,7 +102,8 @@ pub fn multi_chain(
     let (result_send, result_recv) = unbounded();
     let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
     let reversible = params.variant == RecomVariant::Reversible;
-    let sample_district_pairs = reversible || params.variant == RecomVariant::DistrictPairs;
+    let sample_district_pairs = reversible || params.variant == RecomVariant::DistrictPairsUST || params.variant == RecomVariant::DistrictPairsRMST;
+    let rmst = params.variant == RecomVariant::CutEdgesRMST || params.variant == RecomVariant::DistrictPairsRMST;
 
     // Start threads.
     scope(|scope| {
@@ -120,7 +121,12 @@ pub fn multi_chain(
                 let mut mst_buf = MSTBuffer::new(node_ub);
                 let mut split_buf = SplitBuffer::new(node_ub, params.balance_ub as usize);
                 let mut proposal_buf = RecomProposal::new_buffer(node_ub);
-                let mut range_buf = RandomRangeBuffer::new(&mut rng);
+                let mut st_sampler: Box<dyn SpanningTreeSampler>;
+                if rmst {
+                    st_sampler = Box::new(RMSTSampler::new());
+                } else {
+                    st_sampler = Box::new(USTSampler::new(&mut rng));
+                }
 
                 let mut next: JobPacket = job_r.recv().unwrap();
                 while !next.terminate {
@@ -131,6 +137,7 @@ pub fn multi_chain(
                     let mut counts = SelfLoopCounts::default();
                     let mut proposals = Vec::<RecomProposal>::new();
                     for _ in 0..next.n_steps {
+                        // Step 1: sample a pair of adjacent districts.
                         let (dist_a, dist_b);
                         if sample_district_pairs {
                             // Choose district pairs at random until finding an adjacent pair.
@@ -150,14 +157,11 @@ pub fn multi_chain(
                             dist_b = partition.assignments[graph.edges[edge_idx].1] as usize;
                         }
                         partition.subgraph(&graph, &mut subgraph_buf, dist_a, dist_b);
+
                         // Step 2: draw a random spanning tree of the subgraph induced by the
                         // two districts.
-                        uniform_random_spanning_tree(
-                            &subgraph_buf.graph,
-                            &mut mst_buf,
-                            &mut range_buf,
-                            &mut rng,
-                        );
+                        st_sampler.random_spanning_tree(&subgraph_buf.graph, &mut mst_buf, &mut rng);
+
                         // Step 3: choose a random balance edge, if possible.
                         let split = random_split(
                             &subgraph_buf.graph,
