@@ -77,7 +77,7 @@ This project was originally a weekend project that lived in one `.rs` file, so i
     - [ ] `recom::run::multi_chain`
     - [ ] `recom::random_split` _(maybe)_
   - [ ] Enforce Rust idioms: remove `return` and `&Vec` where possible, etc.
-  - [ ] Make spanning tree statistics and other linear algebra-heavy features a crate-level feature?
+  - [x] Make spanning tree statistics and other linear algebra-heavy features a crate-level feature?
   - [ ] Remove TSV writer? (in any case, should strongly encourage JSONL)
   - [ ] Struct marking which stats to collect?
   - [ ] `default` → `new` where appropriate
@@ -94,6 +94,7 @@ This project was originally a weekend project that lived in one `.rs` file, so i
       - [ ] Add RMST sampling using Kruskal's algorithm
   - [x] Rectangular grid generator (useful for testing)
   - [ ] Minimal relabeling
+  - [ ] Short bursts optimization (and general optimization framework)
 - [ ] New features (possible)
   - [ ] Alternate input formats? (list of edges?)
   - [ ] Alternate output formats? (Parquet?)
