@@ -8,9 +8,9 @@
 //! is multithreaded and prints accepted proposals to `stdout` in TSV format.
 //! It also collects rejection/self-loop statistics.
 use super::{random_split, RecomParams, RecomProposal, RecomVariant};
-use crate::buffers::{MSTBuffer, SplitBuffer, SubgraphBuffer};
+use crate::buffers::{SpanningTreeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
-use crate::mst::{SpanningTreeSampler, USTSampler, RMSTSampler};
+use crate::spanning_tree::{SpanningTreeSampler, USTSampler, RMSTSampler};
 use crate::partition::Partition;
 use crate::stats::{SelfLoopCounts, SelfLoopReason, StatsWriter};
 use crossbeam::scope;
@@ -118,7 +118,7 @@ pub fn multi_chain(
                 let mut rng: SmallRng =
                     SeedableRng::seed_from_u64(params.rng_seed + t_idx as u64 + 1);
                 let mut subgraph_buf = SubgraphBuffer::new(n, node_ub);
-                let mut mst_buf = MSTBuffer::new(node_ub);
+                let mut st_buf = SpanningTreeBuffer::new(node_ub);
                 let mut split_buf = SplitBuffer::new(node_ub, params.balance_ub as usize);
                 let mut proposal_buf = RecomProposal::new_buffer(node_ub);
                 let mut st_sampler: Box<dyn SpanningTreeSampler>;
@@ -160,13 +160,13 @@ pub fn multi_chain(
 
                         // Step 2: draw a random spanning tree of the subgraph induced by the
                         // two districts.
-                        st_sampler.random_spanning_tree(&subgraph_buf.graph, &mut mst_buf, &mut rng);
+                        st_sampler.random_spanning_tree(&subgraph_buf.graph, &mut st_buf, &mut rng);
 
                         // Step 3: choose a random balance edge, if possible.
                         let split = random_split(
                             &subgraph_buf.graph,
                             &mut rng,
-                            &mst_buf.mst,
+                            &st_buf.st,
                             dist_a,
                             dist_b,
                             &mut split_buf,

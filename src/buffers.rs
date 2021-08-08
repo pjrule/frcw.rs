@@ -1,5 +1,5 @@
 //! Buffer data structures to avoid memory reallocation.
-pub use self::mst::MSTBuffer;
+pub use self::spanning_tree::SpanningTreeBuffer;
 pub use self::random_range::RandomRangeBuffer;
 pub use self::split::SplitBuffer;
 pub use self::subgraph::SubgraphBuffer;
@@ -45,31 +45,29 @@ mod subgraph {
     }
 }
 
-/// Buffer for (minimum) spanning trees.
-// TODO: strictly speaking, they don't have to be
-// MSTs, just STs---rename?
-mod mst {
+/// Buffer for spanning trees.
+mod spanning_tree {
     /// A reusable spanning tree buffer.
-    pub struct MSTBuffer {
+    pub struct SpanningTreeBuffer {
         /// Boolean representation of the subset of nodes in the spanning tree.
         pub in_tree: Vec<bool>,
         /// The next node in the spanning tree (for a chosen ordering).
         pub next: Vec<i64>,
         /// The edges in the MST.
-        pub mst_edges: Vec<usize>,
+        pub edges: Vec<usize>,
         /// The neighbors of each node in the MST (list-of-lists representation).
-        pub mst: Vec<Vec<usize>>,
+        pub st: Vec<Vec<usize>>,
     }
 
-    impl MSTBuffer {
+    impl SpanningTreeBuffer {
         /// Creates a buffer for a spanning tree of a subgraph
         /// within a graph of size `n`.
-        pub fn new(n: usize) -> MSTBuffer {
-            return MSTBuffer {
+        pub fn new(n: usize) -> SpanningTreeBuffer {
+            return SpanningTreeBuffer {
                 in_tree: vec![false; n],
                 next: vec![-1 as i64; n],
-                mst_edges: Vec::<usize>::with_capacity(n - 1),
-                mst: vec![Vec::<usize>::with_capacity(8); n],
+                edges: Vec::<usize>::with_capacity(n - 1),
+                st: vec![Vec::<usize>::with_capacity(8); n],
             };
         }
 
@@ -77,8 +75,8 @@ mod mst {
         pub fn clear(&mut self) {
             self.in_tree.fill(false);
             self.next.fill(-1);
-            self.mst_edges.clear();
-            for node in self.mst.iter_mut() {
+            self.edges.clear();
+            for node in self.st.iter_mut() {
                 node.clear();
             }
         }

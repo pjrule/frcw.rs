@@ -3,7 +3,7 @@
 mod buffers;
 pub mod graph;
 pub mod init;
-mod mst;
+mod spanning_tree;
 pub mod partition;
 pub mod recom;
 pub mod stats;

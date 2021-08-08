@@ -1,5 +1,5 @@
 //! Functions for generating random spanning trees.
-use crate::buffers::MSTBuffer;
+use crate::buffers::SpanningTreeBuffer;
 use crate::graph::{Edge, Graph};
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -7,10 +7,10 @@ use std::cmp::{max, min};
 
 pub trait SpanningTreeSampler {
     /// Samples a random tree of `graph` using `rng`; inserts the tree into `buf`.
-    fn random_spanning_tree(&mut self, graph: &Graph, buf: &mut MSTBuffer, rng: &mut SmallRng);
+    fn random_spanning_tree(&mut self, graph: &Graph, buf: &mut SpanningTreeBuffer, rng: &mut SmallRng);
 }
-pub use crate::mst::ust::USTSampler;
-pub use crate::mst::rmst::RMSTSampler;
+pub use crate::spanning_tree::ust::USTSampler;
+pub use crate::spanning_tree::rmst::RMSTSampler;
 
 
 /// Spanning tree sampling from the uniform distribution.
@@ -50,7 +50,7 @@ mod ust {
         /// [1]  Wilson, David Bruce. "Generating random spanning trees more quickly
         ///      than the cover time." Proceedings of the twenty-eighth annual ACM
         ///      symposium on Theory of computing. 1996.
-        fn random_spanning_tree(&mut self, graph: &Graph, buf: &mut MSTBuffer, rng: &mut SmallRng) {
+        fn random_spanning_tree(&mut self, graph: &Graph, buf: &mut SpanningTreeBuffer, rng: &mut SmallRng) {
             buf.clear();
             let n = graph.pops.len();
             let root = rng.gen_range(0..n);
@@ -77,25 +77,25 @@ mod ust {
                     let mut edge_idx = graph.edges_start[a];
                     while graph.edges[edge_idx].0 == a {
                         if graph.edges[edge_idx].1 == b {
-                            buf.mst_edges.push(edge_idx);
+                            buf.edges.push(edge_idx);
                             break;
                         }
                         edge_idx += 1;
                     }
                 }
             }
-            if buf.mst_edges.len() != n - 1 {
+            if buf.edges.len() != n - 1 {
                 panic!(
                     "expected to have {} edges in MST but got {}",
                     n - 1,
-                    buf.mst_edges.len()
+                    buf.edges.len()
                 );
             }
 
-            for &edge in buf.mst_edges.iter() {
+            for &edge in buf.edges.iter() {
                 let Edge(src, dst) = graph.edges[edge];
-                buf.mst[src].push(dst);
-                buf.mst[dst].push(src);
+                buf.st[src].push(dst);
+                buf.st[dst].push(src);
             }
         }
     }
@@ -123,7 +123,7 @@ mod rmst {
         /// * `graph` - The graph to form a spanning tree from.
         /// * `buf` - The buffer to insert the spanning tree into.
         /// * `rng` - A random number generator (used to generate random edge weights).
-        fn random_spanning_tree(&mut self, _graph: &Graph, _buf: &mut MSTBuffer, _rng: &mut SmallRng) {
+        fn random_spanning_tree(&mut self, _graph: &Graph, _buf: &mut SpanningTreeBuffer, _rng: &mut SmallRng) {
             panic!("not implemented");
         }
     }
