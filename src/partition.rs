@@ -48,21 +48,19 @@ impl Partition {
     /// (cut edges list, district adjacency matrix).
     fn update_derived(&mut self, graph: &Graph) {
         // Recompute adjacency/cut edges.
-        let mut dist_adj = vec![0 as u32; (self.num_dists * self.num_dists) as usize];
-        let mut cut_edges = Vec::<usize>::new();
+        self.dist_adj.resize((self.num_dists * self.num_dists) as usize, 0);
+        self.cut_edges.clear();
         for (index, edge) in graph.edges.iter().enumerate() {
             let dist_a = self.assignments[edge.0 as usize];
             let dist_b = self.assignments[edge.1 as usize];
             assert!(dist_a < self.num_dists);
             assert!(dist_b < self.num_dists);
             if dist_a != dist_b {
-                dist_adj[((dist_a * self.num_dists) + dist_b) as usize] += 1;
-                dist_adj[((dist_b * self.num_dists) + dist_a) as usize] += 1;
-                cut_edges.push(index);
+                self.dist_adj[((dist_a * self.num_dists) + dist_b) as usize] += 1;
+                self.dist_adj[((dist_b * self.num_dists) + dist_a) as usize] += 1;
+                self.cut_edges.push(index);
             }
         }
-        self.dist_adj = dist_adj;
-        self.cut_edges = cut_edges;
     }
 
     /// Copies the subgraph induced by the union of districts `a` and `b`
@@ -82,12 +80,8 @@ impl Partition {
     /// * `b` - The label of the `b`-district.
     pub fn subgraph(&self, graph: &Graph, buf: &mut SubgraphBuffer, a: usize, b: usize) {
         buf.clear();
-        for &node in self.dist_nodes[a].iter() {
-            buf.raw_nodes.push(node);
-        }
-        for &node in self.dist_nodes[b].iter() {
-            buf.raw_nodes.push(node);
-        }
+        buf.raw_nodes.clone_from(&self.dist_nodes[a]);
+        buf.raw_nodes.extend_from_slice(&self.dist_nodes[b]);
         for (idx, &node) in buf.raw_nodes.iter().enumerate() {
             buf.node_to_idx[node] = idx as i64;
         }
