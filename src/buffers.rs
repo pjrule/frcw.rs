@@ -49,12 +49,6 @@ mod subgraph {
 mod spanning_tree {
     /// A reusable spanning tree buffer.
     pub struct SpanningTreeBuffer {
-        /// Boolean representation of the subset of nodes in the spanning tree.
-        pub in_tree: Vec<bool>,
-        /// The next node in the spanning tree (for a chosen ordering).
-        pub next: Vec<i64>,
-        /// The edges in the MST.
-        pub edges: Vec<usize>,
         /// The neighbors of each node in the MST (list-of-lists representation).
         pub st: Vec<Vec<usize>>,
     }
@@ -63,19 +57,13 @@ mod spanning_tree {
         /// Creates a buffer for a spanning tree of a subgraph
         /// within a graph of size `n`.
         pub fn new(n: usize) -> SpanningTreeBuffer {
-            return SpanningTreeBuffer {
-                in_tree: vec![false; n],
-                next: vec![-1 as i64; n],
-                edges: Vec::<usize>::with_capacity(n - 1),
+            SpanningTreeBuffer {
                 st: vec![Vec::<usize>::with_capacity(8); n],
-            };
+            }
         }
 
         /// Resets the buffer.
         pub fn clear(&mut self) {
-            self.in_tree.fill(false);
-            self.next.fill(-1);
-            self.edges.clear();
             for node in self.st.iter_mut() {
                 node.clear();
             }

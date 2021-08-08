@@ -3,7 +3,7 @@ use std::cmp::{max, min};
 use std::collections::HashMap;
 
 /// Edges are pairs of node indices.
-#[derive(Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
+#[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub struct Edge(pub usize, pub usize);
 
 /// A lightweight graph with population metadata.

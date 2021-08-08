@@ -126,9 +126,9 @@ pub fn multi_chain(
                 let mut proposal_buf = RecomProposal::new_buffer(node_ub);
                 let mut st_sampler: Box<dyn SpanningTreeSampler>;
                 if rmst {
-                    st_sampler = Box::new(RMSTSampler::new());
+                    st_sampler = Box::new(RMSTSampler::new(node_ub));
                 } else {
-                    st_sampler = Box::new(USTSampler::new(&mut rng));
+                    st_sampler = Box::new(USTSampler::new(node_ub, &mut rng));
                 }
 
                 let mut next: JobPacket = job_r.recv().unwrap();
