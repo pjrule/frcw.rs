@@ -172,7 +172,8 @@ fn main() {
         "num_threads": n_threads,
         "num_steps": n_steps,
         "parallel": true,
-        "graph_json": graph_json
+        "graph_json": graph_json,
+        "chain_variant": variant_str,
     });
     if variant == RecomVariant::Reversible {
         meta.as_object_mut()
