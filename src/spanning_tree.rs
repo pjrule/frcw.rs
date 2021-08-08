@@ -212,23 +212,23 @@ mod rmst {
             .collect::<Vec<(EdgeWeight, Edge)>>();
         edges_by_weight.sort();
 
-        let n_edges = graph.neighbors.len() - 1;
-        let mut unions = 0;
+        let n_edges = graph.pops.len() - 1;
+        let mut n_unions = 0;
         for (_, Edge(src, dst)) in edges_by_weight.into_iter() {
-            if unions == n_edges {
+            if n_unions == n_edges {
                 break;
             }
             if !ut.unioned(keys[src], keys[dst]) {
                 ut.union(keys[src], keys[dst]);
                 buf.st[src].push(dst);
                 buf.st[dst].push(src);
-                unions += 1;
+                n_unions += 1;
             }
         }
-        if unions != n_edges {
+        if n_unions != n_edges {
             panic!(
                 "expected to have {} edges in MST but got {}",
-                n_edges, unions
+                n_edges, n_unions
             );
         }
     }
@@ -249,10 +249,9 @@ mod rmst {
             rng: &mut SmallRng,
         ) {
             // Sample edge weights uniformly at random and find the associated MST.
-            self.weights.reserve(graph.edges.len());
+            self.weights.resize(graph.edges.len(), 0);
             rng.fill(&mut self.weights[0..graph.edges.len()]);
             minimum_spanning_tree(graph, buf, &self.weights);
-            self.weights.clear();
         }
     }
 }

@@ -40,7 +40,7 @@ Running a 100,000-step [GerryChain](https://github.com/mggg/gerrychain)-like ReC
                       --rng-seed 94915664 \
                       --tol 0.01 \
                       --batch-size 1 \ 
-                      --variant cut_edges \
+                      --variant cut-edges-ust \
                       --sum-cols G16DPRS G16RPRS G16DHOR G16RHOR G18DSEN G18RSEN > va_recom.jsonl
 ```
 
