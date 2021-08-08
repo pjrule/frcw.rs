@@ -1,6 +1,6 @@
 //! Buffer data structures to avoid memory reallocation.
-pub use self::spanning_tree::SpanningTreeBuffer;
 pub use self::random_range::RandomRangeBuffer;
+pub use self::spanning_tree::SpanningTreeBuffer;
 pub use self::split::SplitBuffer;
 pub use self::subgraph::SubgraphBuffer;
 

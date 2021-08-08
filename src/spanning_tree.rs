@@ -7,11 +7,15 @@ use std::cmp::{max, min};
 
 pub trait SpanningTreeSampler {
     /// Samples a random tree of `graph` using `rng`; inserts the tree into `buf`.
-    fn random_spanning_tree(&mut self, graph: &Graph, buf: &mut SpanningTreeBuffer, rng: &mut SmallRng);
+    fn random_spanning_tree(
+        &mut self,
+        graph: &Graph,
+        buf: &mut SpanningTreeBuffer,
+        rng: &mut SmallRng,
+    );
 }
-pub use crate::spanning_tree::ust::USTSampler;
 pub use crate::spanning_tree::rmst::RMSTSampler;
-
+pub use crate::spanning_tree::ust::USTSampler;
 
 /// Spanning tree sampling from the uniform distribution.
 mod ust {
@@ -19,7 +23,7 @@ mod ust {
     use crate::buffers::RandomRangeBuffer;
 
     /// Samples random spanning trees from the uniform distribution.
-     pub struct USTSampler {
+    pub struct USTSampler {
         /// A reservoir of random bytes (used for quickly selecting random node neighbors).
         range_buf: RandomRangeBuffer,
     }
@@ -27,7 +31,9 @@ mod ust {
     impl USTSampler {
         /// Initializes the UST sampler's reservoir of random bytes using `rng`.
         pub fn new(rng: &mut SmallRng) -> USTSampler {
-            USTSampler { range_buf: RandomRangeBuffer::new(rng) }
+            USTSampler {
+                range_buf: RandomRangeBuffer::new(rng),
+            }
         }
     }
 
@@ -36,7 +42,7 @@ mod ust {
         /// Returns nothing; The MST buffer `buf` is updated in place.
         ///
         /// We use Wilson's algorithm [1] (which is, in essence, a self-avoiding random
-        /// walk) to generate the tree. 
+        /// walk) to generate the tree.
         ///
         /// # Arguments
         /// * `graph` - The graph to form a spanning tree from. The maximum degree
@@ -50,7 +56,12 @@ mod ust {
         /// [1]  Wilson, David Bruce. "Generating random spanning trees more quickly
         ///      than the cover time." Proceedings of the twenty-eighth annual ACM
         ///      symposium on Theory of computing. 1996.
-        fn random_spanning_tree(&mut self, graph: &Graph, buf: &mut SpanningTreeBuffer, rng: &mut SmallRng) {
+        fn random_spanning_tree(
+            &mut self,
+            graph: &Graph,
+            buf: &mut SpanningTreeBuffer,
+            rng: &mut SmallRng,
+        ) {
             buf.clear();
             let n = graph.pops.len();
             let root = rng.gen_range(0..n);
@@ -59,7 +70,8 @@ mod ust {
                 let mut u = i;
                 while !buf.in_tree[u] {
                     let neighbors = &graph.neighbors[u];
-                    let neighbor = neighbors[self.range_buf.range(rng, neighbors.len() as u8) as usize];
+                    let neighbor =
+                        neighbors[self.range_buf.range(rng, neighbors.len() as u8) as usize];
                     buf.next[u] = neighbor as i64;
                     u = neighbor;
                 }
@@ -115,7 +127,7 @@ mod rmst {
     }
 
     impl SpanningTreeSampler for RMSTSampler {
-        /// Draws a random spanning tree of a graph by sampling random edge weights 
+        /// Draws a random spanning tree of a graph by sampling random edge weights
         /// and finding the minimum spanning tree (using Kruskal's algorithm).
         /// Returns nothing; The MST buffer `buf` is updated in place.
         ///
@@ -123,7 +135,12 @@ mod rmst {
         /// * `graph` - The graph to form a spanning tree from.
         /// * `buf` - The buffer to insert the spanning tree into.
         /// * `rng` - A random number generator (used to generate random edge weights).
-        fn random_spanning_tree(&mut self, _graph: &Graph, _buf: &mut SpanningTreeBuffer, _rng: &mut SmallRng) {
+        fn random_spanning_tree(
+            &mut self,
+            _graph: &Graph,
+            _buf: &mut SpanningTreeBuffer,
+            _rng: &mut SmallRng,
+        ) {
             panic!("not implemented");
         }
     }

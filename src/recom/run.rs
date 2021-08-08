@@ -10,8 +10,8 @@
 use super::{random_split, RecomParams, RecomProposal, RecomVariant};
 use crate::buffers::{SpanningTreeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
-use crate::spanning_tree::{SpanningTreeSampler, USTSampler, RMSTSampler};
 use crate::partition::Partition;
+use crate::spanning_tree::{RMSTSampler, SpanningTreeSampler, USTSampler};
 use crate::stats::{SelfLoopCounts, SelfLoopReason, StatsWriter};
 use crossbeam::scope;
 use crossbeam_channel::unbounded;
@@ -102,8 +102,11 @@ pub fn multi_chain(
     let (result_send, result_recv) = unbounded();
     let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
     let reversible = params.variant == RecomVariant::Reversible;
-    let sample_district_pairs = reversible || params.variant == RecomVariant::DistrictPairsUST || params.variant == RecomVariant::DistrictPairsRMST;
-    let rmst = params.variant == RecomVariant::CutEdgesRMST || params.variant == RecomVariant::DistrictPairsRMST;
+    let sample_district_pairs = reversible
+        || params.variant == RecomVariant::DistrictPairsUST
+        || params.variant == RecomVariant::DistrictPairsRMST;
+    let rmst = params.variant == RecomVariant::CutEdgesRMST
+        || params.variant == RecomVariant::DistrictPairsRMST;
 
     // Start threads.
     scope(|scope| {

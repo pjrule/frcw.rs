@@ -57,7 +57,7 @@ pub enum RecomVariant {
     /// is found. Non-adjacent pairs are self-loops. Spanning trees are
     /// sampled by drawing edge weights uniformly at random and finding
     /// the minimum spanning tree.
-    DistrictPairsRMST
+    DistrictPairsRMST,
 }
 
 /// The parameters of a ReCom chain run.
