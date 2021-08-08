@@ -150,7 +150,7 @@ mod ust {
 /// Spanning tree sampling via random edge weights.
 mod rmst {
     use super::*;
-    use ena::unify::{InPlace, UnificationTable, UnifyKey};
+    use petgraph::unionfind::UnionFind;
 
     type EdgeWeight = u32;
 
@@ -170,24 +170,6 @@ mod rmst {
         }
     }
 
-    // see `ena` UnifyKey example: https://github.com/rust-lang/ena/blob/
-    // 94952db24c1ad75c541b65bcb13d57b2cea8c143/src/unify/tests.rs#L245
-    #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
-    struct NodeKey(u32);
-
-    impl UnifyKey for NodeKey {
-        type Value = ();
-        fn index(&self) -> u32 {
-            self.0
-        }
-        fn from_index(u: u32) -> NodeKey {
-            NodeKey(u)
-        }
-        fn tag() -> &'static str {
-            "NodeKey"
-        }
-    }
-
     /// Given `weights`, finds the minimum spanning tree of `graph` using
     /// Kruskal's algorithm and inserts the tree into `buf`.
     fn minimum_spanning_tree(
@@ -200,9 +182,7 @@ mod rmst {
         // Initialize a union-find data structure to keep track of connected
         // components of the graph.
         // TODO: buffer this?
-        let mut ut: UnificationTable<InPlace<NodeKey>> = UnificationTable::new();
-        ut.reserve(graph.edges.len());
-        let keys: Vec<NodeKey> = graph.edges.iter().map(|_| ut.new_key(())).collect();
+        let mut uf = UnionFind::<usize>::new(graph.edges.len());
 
         // Apply Kruskal's algorithm: add edges until the graph is connected.
         let mut edges_by_weight = weights
@@ -218,8 +198,8 @@ mod rmst {
             if n_unions == n_edges {
                 break;
             }
-            if !ut.unioned(keys[src], keys[dst]) {
-                ut.union(keys[src], keys[dst]);
+            if !uf.equiv(src, dst) {
+                uf.union(src, dst);
                 buf.st[src].push(dst);
                 buf.st[dst].push(src);
                 n_unions += 1;

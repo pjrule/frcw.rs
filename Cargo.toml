@@ -13,6 +13,7 @@ mimalloc = { version = "0.1.25", default-features = false }
 crossbeam-channel = "0.5.0"
 crossbeam = "0.8.0"
 sha3 = "0.9.1"
+petgraph = "0.6.0"
 ndarray = { version = "0.14", optional = true }
 ndarray-linalg = { version = "0.13", features = ["openblas-system"], optional = true }
 
@@ -32,8 +33,9 @@ name = "recom"
 harness = false
 
 [profile.dev]
-opt-level = 3
+split-debuginfo = "unpacked"
 debug = true
+opt-level = 3
 
 [profile.release]
 debug = false
