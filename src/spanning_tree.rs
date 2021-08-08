@@ -150,32 +150,31 @@ mod ust {
 /// Spanning tree sampling via random edge weights.
 mod rmst {
     use super::*;
+    use rand::seq::SliceRandom;
     use petgraph::unionfind::UnionFind;
-
-    type EdgeWeight = u32;
 
     /// Samples random spanning trees by sampling random edge weights and finding
     /// the minimum spanning tree.
     pub struct RMSTSampler {
-        /// Buffer for edge weights.
-        weights: Vec<EdgeWeight>,
+        /// Buffer for randomly ordered edges.
+        edges_by_weight: Vec<Edge>,
     }
 
     impl RMSTSampler {
         /// Initializes a random MST sampler for a graph with approximate size `n`.
         pub fn new(n: usize) -> RMSTSampler {
             RMSTSampler {
-                weights: Vec::<EdgeWeight>::with_capacity(8 * n),
+                edges_by_weight: Vec::<Edge>::with_capacity(8 * n),
             }
         }
     }
 
-    /// Given `weights`, finds the minimum spanning tree of `graph` using
-    /// Kruskal's algorithm and inserts the tree into `buf`.
+    /// Given an edge order (`edges_by_weight`), finds the minimum spanning tree of
+    /// `graph` using Kruskal's algorithm and inserts the tree into `buf`.
     fn minimum_spanning_tree(
         graph: &Graph,
         buf: &mut SpanningTreeBuffer,
-        weights: &Vec<EdgeWeight>,
+        edges_by_weight: &Vec<Edge>,
     ) {
         buf.clear();
 
@@ -185,16 +184,9 @@ mod rmst {
         let mut uf = UnionFind::<usize>::new(graph.edges.len());
 
         // Apply Kruskal's algorithm: add edges until the graph is connected.
-        let mut edges_by_weight = weights
-            .iter()
-            .enumerate()
-            .map(|(idx, &w)| (w, graph.edges[idx]))
-            .collect::<Vec<(EdgeWeight, Edge)>>();
-        edges_by_weight.sort();
-
         let n_edges = graph.pops.len() - 1;
         let mut n_unions = 0;
-        for (_, Edge(src, dst)) in edges_by_weight.into_iter() {
+        for &Edge(src, dst) in edges_by_weight.iter() {
             if n_unions == n_edges {
                 break;
             }
@@ -228,10 +220,9 @@ mod rmst {
             buf: &mut SpanningTreeBuffer,
             rng: &mut SmallRng,
         ) {
-            // Sample edge weights uniformly at random and find the associated MST.
-            self.weights.resize(graph.edges.len(), 0);
-            rng.fill(&mut self.weights[0..graph.edges.len()]);
-            minimum_spanning_tree(graph, buf, &self.weights);
+            self.edges_by_weight.clone_from(&graph.edges);
+            self.edges_by_weight.shuffle(rng);
+            minimum_spanning_tree(graph, buf, &self.edges_by_weight);
         }
     }
 }
