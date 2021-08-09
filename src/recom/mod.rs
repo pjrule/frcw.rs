@@ -5,6 +5,8 @@ use rand::rngs::SmallRng;
 use rand::Rng;
 use std::result::Result;
 
+/// ReCom batch size autotuning.
+//mod autotune;
 /// ReCom runners.
 pub mod run;
 

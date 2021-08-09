@@ -14,7 +14,7 @@ use crate::partition::Partition;
 use crate::spanning_tree::{RMSTSampler, SpanningTreeSampler, USTSampler};
 use crate::stats::{SelfLoopCounts, SelfLoopReason, StatsWriter};
 use crossbeam::scope;
-use crossbeam_channel::{bounded, unbounded};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
@@ -69,6 +69,173 @@ struct StepPacket {
     terminate: bool,
 }
 
+/// Starts a thread that writes statistics from accepted plans to `stdout`.
+fn start_stats_thread(
+    graph: Graph,
+    mut partition: Partition,
+    mut writer: Box<dyn StatsWriter>,
+    recv: Receiver<StepPacket>,
+) {
+    writer.init(&graph, &partition).unwrap();
+    let mut next: StepPacket = recv.recv().unwrap();
+    while !next.terminate {
+        let proposal = next.proposal.unwrap();
+        partition.update(&proposal);
+        writer
+            .step(next.step, &graph, &partition, &proposal, &next.counts)
+            .unwrap();
+        next = recv.recv().unwrap();
+    }
+    writer.close().unwrap();
+}
+
+/// Stops a statistics writer thread.
+fn stop_stats_thread(send: &Sender<StepPacket>) {
+    send.send(StepPacket {
+        step: 0,
+        proposal: None,
+        counts: SelfLoopCounts::default(),
+        terminate: true,
+    })
+    .unwrap();
+}
+
+/// Starts a ReCom job thread.
+/// ReCom job threads sample batches of proposals, which are then aggregated by
+/// the main thread. (Thus, this function contains most of the ReCom chain logic.)
+///
+/// Arguments:
+/// * `graph` - The graph associated with the chain.
+/// * `partition` - The initial state of the chain.
+/// * `params` - The chain parameters.
+/// * `rng_seed` - The RNG seed for the job thread. (This should differ across threads.)
+/// * `buf_size` - The buffer size for various chain buffers. This should usually be twice
+///   the maximum possible district size (in nodes).
+/// * `job_recv` - A Crossbeam channel for receiving batches of work from the main thread.
+/// * `result_send` - A Crossbeam channel for sending completed batches to the main thread.
+fn start_job_thread(
+    graph: Graph,
+    mut partition: Partition,
+    params: RecomParams,
+    rng_seed: u64,
+    buf_size: usize,
+    job_recv: Receiver<JobPacket>,
+    result_send: Sender<ResultPacket>,
+) {
+    let n = graph.pops.len();
+    let mut rng: SmallRng = SeedableRng::seed_from_u64(rng_seed);
+    let mut subgraph_buf = SubgraphBuffer::new(n, buf_size);
+    let mut st_buf = SpanningTreeBuffer::new(buf_size);
+    let mut split_buf = SplitBuffer::new(buf_size, params.balance_ub as usize);
+    let mut proposal_buf = RecomProposal::new_buffer(buf_size);
+    let mut st_sampler: Box<dyn SpanningTreeSampler>;
+
+    let reversible = params.variant == RecomVariant::Reversible;
+    let sample_district_pairs = reversible
+        || params.variant == RecomVariant::DistrictPairsUST
+        || params.variant == RecomVariant::DistrictPairsRMST;
+    let rmst = params.variant == RecomVariant::CutEdgesRMST
+        || params.variant == RecomVariant::DistrictPairsRMST;
+
+    if rmst {
+        st_sampler = Box::new(RMSTSampler::new(buf_size));
+    } else {
+        st_sampler = Box::new(USTSampler::new(buf_size, &mut rng));
+    }
+
+    let mut next: JobPacket = job_recv.recv().unwrap();
+    while !next.terminate {
+        match next.diff {
+            Some(diff) => partition.update(&diff),
+            None => {}
+        }
+        let mut counts = SelfLoopCounts::default();
+        let mut proposals = Vec::<RecomProposal>::new();
+        for _ in 0..next.n_steps {
+            // Step 1: sample a pair of adjacent districts.
+            let (dist_a, dist_b);
+            if sample_district_pairs {
+                // Choose district pairs at random until finding an adjacent pair.
+                dist_a = rng.gen_range(0..partition.num_dists) as usize;
+                dist_b = rng.gen_range(0..partition.num_dists) as usize;
+                let num_dists = partition.num_dists;
+                let dist_adj = partition.dist_adj(&graph);
+                if dist_adj[(dist_a * num_dists as usize) + dist_b] == 0 {
+                    counts.inc(SelfLoopReason::NonAdjacent);
+                    continue;
+                }
+            } else {
+                // Sample a cut edge, which is guaranteed to yield a pair of adjacent districts.
+                let cut_edges = partition.cut_edges(&graph);
+                let cut_edge_idx = rng.gen_range(0..cut_edges.len()) as usize;
+                let edge_idx = cut_edges[cut_edge_idx] as usize;
+                dist_a = partition.assignments[graph.edges[edge_idx].0] as usize;
+                dist_b = partition.assignments[graph.edges[edge_idx].1] as usize;
+            }
+            partition.subgraph(&graph, &mut subgraph_buf, dist_a, dist_b);
+
+            // Step 2: draw a random spanning tree of the subgraph induced by the
+            // two districts.
+            st_sampler.random_spanning_tree(&subgraph_buf.graph, &mut st_buf, &mut rng);
+
+            // Step 3: choose a random balance edge, if possible.
+            let split = random_split(
+                &subgraph_buf.graph,
+                &mut rng,
+                &st_buf.st,
+                dist_a,
+                dist_b,
+                &mut split_buf,
+                &mut proposal_buf,
+                &subgraph_buf.raw_nodes,
+                &params,
+            );
+            match split {
+                Ok(n_splits) => {
+                    if reversible {
+                        // Step 4: accept any particular edge with probability 1 / (M * seam length)
+                        let seam_length = proposal_buf.seam_length(&graph);
+                        let prob =
+                            (n_splits as f64) / (seam_length as f64 * params.balance_ub as f64);
+                        if prob > 1.0 {
+                            panic!(
+                                "Invalid state: got {} splits, seam length {}",
+                                n_splits, seam_length
+                            );
+                        }
+                        if rng.gen::<f64>() < prob {
+                            proposals.push(proposal_buf.clone());
+                        } else {
+                            counts.inc(SelfLoopReason::SeamLength);
+                        }
+                    } else {
+                        // Accept.
+                        proposals.push(proposal_buf.clone());
+                    }
+                }
+                Err(_) => counts.inc(SelfLoopReason::NoSplit), // TODO: break out errors?
+            }
+        }
+        result_send
+            .send(ResultPacket {
+                counts: counts,
+                proposals: proposals,
+            })
+            .unwrap();
+        next = job_recv.recv().unwrap();
+    }
+}
+
+/// Stops a ReCom job thread.
+fn stop_job_thread(send: &Sender<JobPacket>) {
+    send.send(JobPacket {
+        n_steps: 0,
+        diff: None,
+        terminate: true,
+    })
+    .unwrap();
+}
+
 /// Runs a multi-threaded ReCom chain and prints accepted
 /// proposals to `stdout` in TSV format.
 ///
@@ -100,7 +267,7 @@ struct StepPacket {
 pub fn multi_chain(
     graph: &Graph,
     partition: &Partition,
-    mut writer: Box<dyn StatsWriter>,
+    writer: Box<dyn StatsWriter>,
     params: RecomParams,
     n_threads: usize,
     batch_size: usize,
@@ -110,147 +277,41 @@ pub fn multi_chain(
     let mut job_sends = vec![]; // main thread sends work to job threads
     let mut job_recvs = vec![]; // job threads receive work from main thread
     for _ in 0..n_threads {
-        // TODO: fancy unzipping?
-        let (s, r) = unbounded();
+        let (s, r): (Sender<JobPacket>, Receiver<JobPacket>) = unbounded();
         job_sends.push(s);
         job_recvs.push(r);
     }
     // All job threads send a summary of chain results back to the main thread.
-    let (result_send, result_recv) = unbounded();
+    let (result_send, result_recv): (Sender<ResultPacket>, Receiver<ResultPacket>) = unbounded();
     // The stats thread receives accepted proposals from the main thread.
-    let (stats_send, stats_recv) = bounded(STATS_CHANNEL_CAPACITY);
+    let (stats_send, stats_recv): (Sender<StepPacket>, Receiver<StepPacket>) =
+        bounded(STATS_CHANNEL_CAPACITY);
     let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
-    let reversible = params.variant == RecomVariant::Reversible;
-    let sample_district_pairs = reversible
-        || params.variant == RecomVariant::DistrictPairsUST
-        || params.variant == RecomVariant::DistrictPairsRMST;
-    let rmst = params.variant == RecomVariant::CutEdgesRMST
-        || params.variant == RecomVariant::DistrictPairsRMST;
 
     // Start job and stats threads.
     scope(|scope| {
         // Start stats thread.
-        {
-            let graph = graph.clone();
-            let mut partition = partition.clone();
-            scope.spawn(move |_| {
-                writer.init(&graph, &partition).unwrap();
-                let mut next: StepPacket = stats_recv.recv().unwrap();
-                while !next.terminate {
-                    let proposal = next.proposal.unwrap();
-                    partition.update(&proposal);
-                    writer
-                        .step(next.step, &graph, &partition, &proposal, &next.counts)
-                        .unwrap();
-                    next = stats_recv.recv().unwrap();
-                }
-                writer.close().unwrap();
-            });
-        }
+        scope.spawn(move |_| {
+            start_stats_thread(graph.clone(), partition.clone(), writer, stats_recv);
+        });
 
         // Start job threads.
         for t_idx in 0..n_threads {
-            let job_r = job_recvs[t_idx].clone();
-            let res_s = result_send.clone();
-            let graph = graph.clone();
-            let mut partition = partition.clone();
+            // TODO: is this (+ t_idx) a sensible way to seed?
+            let rng_seed = params.rng_seed + t_idx as u64 + 1;
+            let job_recv = job_recvs[t_idx].clone();
+            let result_send = result_send.clone();
+
             scope.spawn(move |_| {
-                let n = graph.pops.len();
-                // TODO: is this (+ t_idx) a sensible way to seed?
-                let mut rng: SmallRng =
-                    SeedableRng::seed_from_u64(params.rng_seed + t_idx as u64 + 1);
-                let mut subgraph_buf = SubgraphBuffer::new(n, node_ub);
-                let mut st_buf = SpanningTreeBuffer::new(node_ub);
-                let mut split_buf = SplitBuffer::new(node_ub, params.balance_ub as usize);
-                let mut proposal_buf = RecomProposal::new_buffer(node_ub);
-                let mut st_sampler: Box<dyn SpanningTreeSampler>;
-                if rmst {
-                    st_sampler = Box::new(RMSTSampler::new(node_ub));
-                } else {
-                    st_sampler = Box::new(USTSampler::new(node_ub, &mut rng));
-                }
-
-                let mut next: JobPacket = job_r.recv().unwrap();
-                while !next.terminate {
-                    match next.diff {
-                        Some(diff) => partition.update(&diff),
-                        None => {}
-                    }
-                    let mut counts = SelfLoopCounts::default();
-                    let mut proposals = Vec::<RecomProposal>::new();
-                    for _ in 0..next.n_steps {
-                        // Step 1: sample a pair of adjacent districts.
-                        let (dist_a, dist_b);
-                        if sample_district_pairs {
-                            // Choose district pairs at random until finding an adjacent pair.
-                            dist_a = rng.gen_range(0..partition.num_dists) as usize;
-                            dist_b = rng.gen_range(0..partition.num_dists) as usize;
-                            let num_dists = partition.num_dists;
-                            let dist_adj = partition.dist_adj(&graph);
-                            if dist_adj[(dist_a * num_dists as usize) + dist_b] == 0 {
-                                counts.inc(SelfLoopReason::NonAdjacent);
-                                continue;
-                            }
-                        } else {
-                            // Sample a cut edge, which is guaranteed to yield a pair of adjacent districts.
-                            let cut_edges = partition.cut_edges(&graph);
-                            let cut_edge_idx = rng.gen_range(0..cut_edges.len()) as usize;
-                            let edge_idx = cut_edges[cut_edge_idx] as usize;
-                            dist_a = partition.assignments[graph.edges[edge_idx].0] as usize;
-                            dist_b = partition.assignments[graph.edges[edge_idx].1] as usize;
-                        }
-                        partition.subgraph(&graph, &mut subgraph_buf, dist_a, dist_b);
-
-                        // Step 2: draw a random spanning tree of the subgraph induced by the
-                        // two districts.
-                        st_sampler.random_spanning_tree(&subgraph_buf.graph, &mut st_buf, &mut rng);
-
-                        // Step 3: choose a random balance edge, if possible.
-                        let split = random_split(
-                            &subgraph_buf.graph,
-                            &mut rng,
-                            &st_buf.st,
-                            dist_a,
-                            dist_b,
-                            &mut split_buf,
-                            &mut proposal_buf,
-                            &subgraph_buf.raw_nodes,
-                            &params,
-                        );
-                        match split {
-                            Ok(n_splits) => {
-                                if reversible {
-                                    // Step 4: accept any particular edge with probability 1 / (M * seam length)
-                                    let seam_length = proposal_buf.seam_length(&graph);
-                                    let prob = (n_splits as f64)
-                                        / (seam_length as f64 * params.balance_ub as f64);
-                                    if prob > 1.0 {
-                                        panic!(
-                                            "Invalid state: got {} splits, seam length {}",
-                                            n_splits, seam_length
-                                        );
-                                    }
-                                    if rng.gen::<f64>() < prob {
-                                        proposals.push(proposal_buf.clone());
-                                    } else {
-                                        counts.inc(SelfLoopReason::SeamLength);
-                                    }
-                                } else {
-                                    // Accept.
-                                    proposals.push(proposal_buf.clone());
-                                }
-                            }
-                            Err(_) => counts.inc(SelfLoopReason::NoSplit), // TODO: break out errors?
-                        }
-                    }
-                    res_s
-                        .send(ResultPacket {
-                            counts: counts,
-                            proposals: proposals,
-                        })
-                        .unwrap();
-                    next = job_r.recv().unwrap();
-                }
+                start_job_thread(
+                    graph.clone(),
+                    partition.clone(),
+                    params.clone(),
+                    rng_seed,
+                    node_ub,
+                    job_recv,
+                    result_send,
+                );
             });
         }
 
@@ -325,21 +386,9 @@ pub fn multi_chain(
 
         // Terminate worker threads.
         for job in job_sends.iter() {
-            job.send(JobPacket {
-                n_steps: batch_size,
-                diff: None,
-                terminate: true,
-            })
-            .unwrap();
+            stop_job_thread(job);
         }
-        stats_send
-            .send(StepPacket {
-                step: step,
-                proposal: None,
-                counts: SelfLoopCounts::default(),
-                terminate: true,
-            })
-            .unwrap();
     })
     .unwrap();
+    stop_stats_thread(&stats_send);
 }
