@@ -32,6 +32,19 @@ pub trait StatsWriter: Send {
 /// Writes chain statistics in TSV (tab-separated values) format.
 /// Each step in the chain is a line; no statistics are saved about the
 /// initial partition.
+///
+/// Rows in the output contain the following columns:
+///   * `step` - The step count at the accepted proposal (including self-loops).
+///   * `non_adjacent` - The number of self-loops due to non-adjacency.
+///   * `no_split` - The number of self-loops due to the lack of an ε-balanced split.
+///   * `seam_length` - The number of self-loops due to seam length rejection
+///     (Reversible ReCom only).
+///   * `a_label` - The label of the `a`-district in the proposal.
+///   * `b_label` - The label of the `b`-district in the proposal.
+///   * `a_pop` - The population of the new `a`-district.
+///   * `b_pop` - The population of the new `b`-district.
+///   * `a_nodes` - The list of node indices in the new `a`-district.
+///   * `b_nodes` - The list of node indices in the new `b`-district.
 pub struct TSVWriter {}
 
 /// Writes assignments in space-delimited format (with step number prefix).
