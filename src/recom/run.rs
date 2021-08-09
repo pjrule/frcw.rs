@@ -7,7 +7,9 @@
 //! Currently, there is only one runner ([`multi_chain`]). This runner
 //! is multithreaded and prints accepted proposals to `stdout` in TSV format.
 //! It also collects rejection/self-loop statistics.
-use super::{random_split, RecomParams, RecomProposal, RecomVariant};
+use super::{
+    cut_edge_dist_pair, random_split, uniform_dist_pair, RecomParams, RecomProposal, RecomVariant,
+};
 use crate::buffers::{SpanningTreeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
 use crate::partition::Partition;
@@ -155,22 +157,23 @@ fn start_job_thread(
             // Step 1: sample a pair of adjacent districts.
             let (dist_a, dist_b);
             if sample_district_pairs {
-                // Choose district pairs at random until finding an adjacent pair.
-                dist_a = rng.gen_range(0..partition.num_dists) as usize;
-                dist_b = rng.gen_range(0..partition.num_dists) as usize;
-                let num_dists = partition.num_dists;
-                let dist_adj = partition.dist_adj(&graph);
-                if dist_adj[(dist_a * num_dists as usize) + dist_b] == 0 {
-                    counts.inc(SelfLoopReason::NonAdjacent);
-                    continue;
+                // Sample a pair of districts uniformly at random, self-looping if an
+                // adjacent pair is not found.
+                match uniform_dist_pair(&graph, &mut partition, &mut rng) {
+                    Some((a, b)) => {
+                        dist_a = a;
+                        dist_b = b;
+                    }
+                    None => {
+                        counts.inc(SelfLoopReason::NonAdjacent);
+                        continue;
+                    }
                 }
             } else {
                 // Sample a cut edge, which is guaranteed to yield a pair of adjacent districts.
-                let cut_edges = partition.cut_edges(&graph);
-                let cut_edge_idx = rng.gen_range(0..cut_edges.len()) as usize;
-                let edge_idx = cut_edges[cut_edge_idx] as usize;
-                dist_a = partition.assignments[graph.edges[edge_idx].0] as usize;
-                dist_b = partition.assignments[graph.edges[edge_idx].1] as usize;
+                let (a, b) = cut_edge_dist_pair(&graph, &mut partition, &mut rng);
+                dist_a = a;
+                dist_b = b;
             }
             partition.subgraph(&graph, &mut subgraph_buf, dist_a, dist_b);
 

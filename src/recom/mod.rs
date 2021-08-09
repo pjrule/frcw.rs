@@ -1,6 +1,7 @@
 //! Data structures and algorithms for the recombination (ReCom) Markov chain.
 use crate::buffers::SplitBuffer;
 use crate::graph::Graph;
+use crate::partition::Partition;
 use rand::rngs::SmallRng;
 use rand::Rng;
 use std::result::Result;
@@ -123,6 +124,39 @@ impl RecomProposal {
         }
         return seam;
     }
+}
+
+/// Samples a pair of districts in `partition` uniformly at random using `rng`.
+/// If the pair is not adjacent, returns `None`. Otherwise, returnsa
+/// pair of district labels.
+fn uniform_dist_pair(
+    graph: &Graph,
+    partition: &mut Partition,
+    rng: &mut SmallRng,
+) -> Option<(usize, usize)> {
+    let dist_a = rng.gen_range(0..partition.num_dists) as usize;
+    let dist_b = rng.gen_range(0..partition.num_dists) as usize;
+    let num_dists = partition.num_dists;
+    let dist_adj = partition.dist_adj(&graph);
+    if dist_adj[(dist_a * num_dists as usize) + dist_b] == 0 {
+        return None;
+    }
+    Some((dist_a, dist_b))
+}
+
+/// Samples a pair of districts in `partition` by choosing a cut edge
+/// uniformly at random using `rng`.
+fn cut_edge_dist_pair(
+    graph: &Graph,
+    partition: &mut Partition,
+    rng: &mut SmallRng,
+) -> (usize, usize) {
+    let cut_edges = partition.cut_edges(&graph);
+    let cut_edge_idx = rng.gen_range(0..cut_edges.len()) as usize;
+    let edge_idx = cut_edges[cut_edge_idx] as usize;
+    let dist_a = partition.assignments[graph.edges[edge_idx].0] as usize;
+    let dist_b = partition.assignments[graph.edges[edge_idx].1] as usize;
+    (dist_a, dist_b)
 }
 
 /// Attempts to propose a random recombination (spanning tree-based merge
