@@ -12,24 +12,26 @@ pub struct Partition {
     /// An assignment vector mapping nodes in the graph to
     /// district labels.
     pub assignments: Vec<u32>,
-    /// The cut edges (that is, edges that connect nodes in different
-    /// districts) in the partitioning.
-    /// This should be consistent with `dist_nodes`.
-    pub cut_edges: Vec<usize>,
-    /// A flattened district adjacency matrix. A district pair's entry
-    /// is the number of cut edges between the pair; nonadjacency is
-    /// represented by a cut edge count of 0.
-    pub dist_adj: Vec<u32>,
-    /// The population in each district.
-    pub dist_pops: Vec<u32>,
     /// The nodes in each district (a list-of-lists representation).
     /// This should be consistent with `assignments`.
     pub dist_nodes: Vec<Vec<usize>>,
+    /// The population in each district.
+    pub dist_pops: Vec<u32>,
+    /// The cut edges (that is, edges that connect nodes in different
+    /// districts) in the partitioning.
+    /// This should be consistent with `dist_nodes`.
+    /// Computed lazily.
+    cut_edges: Option<Vec<usize>>,
+    /// A flattened district adjacency matrix. A district pair's entry
+    /// is the number of cut edges between the pair; nonadjacency is
+    /// represented by a cut edge count of 0.
+    /// Computed lazily.
+    dist_adj: Option<Vec<u32>>,
 }
 
 impl Partition {
     /// Updates a [Partition] with an underlying `graph` to reflect a `proposal`.
-    pub fn update(&mut self, graph: &Graph, proposal: &RecomProposal) {
+    pub fn update(&mut self, proposal: &RecomProposal) {
         // Move nodes.
         self.dist_nodes[proposal.a_label] = proposal.a_nodes.clone();
         self.dist_nodes[proposal.b_label] = proposal.b_nodes.clone();
@@ -41,26 +43,42 @@ impl Partition {
         for &node in proposal.b_nodes.iter() {
             self.assignments[node] = proposal.b_label as u32;
         }
-        self.update_derived(graph);
+        // Reset lazily computed derived properties.
+        self.cut_edges = None;
+        self.dist_adj = None;
     }
 
-    /// Updates properties derived from the partition's assignments
-    /// (cut edges list, district adjacency matrix).
-    fn update_derived(&mut self, graph: &Graph) {
-        // Recompute adjacency/cut edges.
-        self.dist_adj.resize((self.num_dists * self.num_dists) as usize, 0);
-        self.cut_edges.clear();
-        for (index, edge) in graph.edges.iter().enumerate() {
-            let dist_a = self.assignments[edge.0 as usize];
-            let dist_b = self.assignments[edge.1 as usize];
-            assert!(dist_a < self.num_dists);
-            assert!(dist_b < self.num_dists);
-            if dist_a != dist_b {
-                self.dist_adj[((dist_a * self.num_dists) + dist_b) as usize] += 1;
-                self.dist_adj[((dist_b * self.num_dists) + dist_a) as usize] += 1;
-                self.cut_edges.push(index);
+    /// Computes the partition's cut edges.
+    pub fn cut_edges(&mut self, graph: &Graph) -> &Vec<usize> {
+        if self.cut_edges.is_none() {
+            let mut cut_edges = Vec::<usize>::new();
+            for (index, edge) in graph.edges.iter().enumerate() {
+                let dist_a = self.assignments[edge.0 as usize];
+                let dist_b = self.assignments[edge.1 as usize];
+                if dist_a != dist_b {
+                    cut_edges.push(index);
+                }
             }
+            self.cut_edges = Some(cut_edges);
         }
+        self.cut_edges.as_ref().unwrap()
+    }
+
+    /// Computes the partition's district adjacency matrix.
+    pub fn dist_adj(&mut self, graph: &Graph) -> &Vec<u32> {
+        if self.dist_adj.is_none() {
+            let mut dist_adj = vec![0 as u32; (self.num_dists * self.num_dists) as usize];
+            for edge in graph.edges.iter() {
+                let dist_a = self.assignments[edge.0 as usize];
+                let dist_b = self.assignments[edge.1 as usize];
+                if dist_a != dist_b {
+                    dist_adj[((dist_a * self.num_dists) + dist_b) as usize] += 1;
+                    dist_adj[((dist_b * self.num_dists) + dist_a) as usize] += 1;
+                }
+            }
+            self.dist_adj = Some(dist_adj);
+        }
+        self.dist_adj.as_ref().unwrap()
     }
 
     /// Copies the subgraph induced by the union of districts `a` and `b`
@@ -124,6 +142,7 @@ impl Partition {
         let mut dist_pops = vec![0 as u32; num_dists as usize];
         let assignments_zeroed = assignments.iter().map(|a| a - 1).collect::<Vec<u32>>();
         for (node, &assignment) in assignments_zeroed.iter().enumerate() {
+            assert!(assignment < num_dists);
             dist_nodes[assignment as usize].push(node);
             dist_pops[assignment as usize] += graph.pops[node];
         }
@@ -132,15 +151,14 @@ impl Partition {
                 return Err(format!("District {} has no nodes", dist + 1));
             }
         }
-        let mut partition = Partition {
+        let partition = Partition {
             num_dists: num_dists,
             assignments: assignments_zeroed,
-            cut_edges: Vec::<usize>::new(), // derived
-            dist_adj: Vec::<u32>::new(),    // derived
+            cut_edges: None,
+            dist_adj: None,
             dist_pops: dist_pops,
             dist_nodes: dist_nodes,
         };
-        partition.update_derived(graph);
         Ok(partition)
     }
 
@@ -220,8 +238,8 @@ mod tests {
         assert_eq!(partition.assignments, vec![0, 0, 0, 1]);
         assert_eq!(partition.dist_pops, vec![3, 1]);
         assert_eq!(partition.dist_nodes, vec![vec![0, 1, 2], vec![3]]);
-        assert_eq!(partition.dist_adj, vec![0, 2, 2, 0]);
-        assert_eq!(partition.cut_edges, vec![2, 3]);
+        assert_eq!(partition.dist_adj(), vec![0, 2, 2, 0]);
+        assert_eq!(partition.cut_edges(), vec![2, 3]);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::io::Result;
 /// A standard interface for writing steps and statistics to stdout.
 /// TODO: allow direct output to a file (e.g. in Parquet format).
 /// TODO: move outside of this module.
-pub trait StatsWriter {
+pub trait StatsWriter: Send {
     /// Prints data from the initial partition.
     fn init(&mut self, graph: &Graph, partition: &Partition) -> Result<()>;
 

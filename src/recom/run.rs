@@ -14,9 +14,13 @@ use crate::partition::Partition;
 use crate::spanning_tree::{RMSTSampler, SpanningTreeSampler, USTSampler};
 use crate::stats::{SelfLoopCounts, SelfLoopReason, StatsWriter};
 use crossbeam::scope;
-use crossbeam_channel::unbounded;
+use crossbeam_channel::{bounded, unbounded};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+
+/// Determines how many proposals the stats thread can lag behind by
+/// (compared to the head of the chain).
+const STATS_CHANNEL_CAPACITY: usize = 16;
 
 /// Returns the maximum number of nodes in two districts based on node
 /// populations (`pop`) and the maximum district population (`max_pop`).
@@ -51,6 +55,18 @@ struct ResultPacket {
     counts: SelfLoopCounts,
     /// ≥0 valid proposals generated within the unit of work.
     proposals: Vec<RecomProposal>,
+}
+
+/// Information necessary to compute statistics about an accepted proposal.
+struct StepPacket {
+    /// The current step count of the chain.
+    step: u64,
+    /// The accepted proposal (only `None` when the termination sentinel is set.)
+    proposal: Option<RecomProposal>,
+    /// The self-loop counts leading up to the proposal.
+    counts: SelfLoopCounts,
+    /// A sentinel used to kill the worker thread.
+    terminate: bool,
 }
 
 /// Runs a multi-threaded ReCom chain and prints accepted
@@ -91,15 +107,18 @@ pub fn multi_chain(
 ) {
     let mut step = 0;
     let node_ub = node_bound(&graph.pops, params.max_pop);
-    let mut job_sends = vec![];
-    let mut job_recvs = vec![];
+    let mut job_sends = vec![]; // main thread sends work to job threads
+    let mut job_recvs = vec![]; // job threads receive work from main thread
     for _ in 0..n_threads {
         // TODO: fancy unzipping?
         let (s, r) = unbounded();
         job_sends.push(s);
         job_recvs.push(r);
     }
+    // All job threads send a summary of chain results back to the main thread.
     let (result_send, result_recv) = unbounded();
+    // The stats thread receives accepted proposals from the main thread.
+    let (stats_send, stats_recv) = bounded(STATS_CHANNEL_CAPACITY);
     let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
     let reversible = params.variant == RecomVariant::Reversible;
     let sample_district_pairs = reversible
@@ -108,8 +127,28 @@ pub fn multi_chain(
     let rmst = params.variant == RecomVariant::CutEdgesRMST
         || params.variant == RecomVariant::DistrictPairsRMST;
 
-    // Start threads.
+    // Start job and stats threads.
     scope(|scope| {
+        // Start stats thread.
+        {
+            let graph = graph.clone();
+            let mut partition = partition.clone();
+            scope.spawn(move |_| {
+                writer.init(&graph, &partition).unwrap();
+                let mut next: StepPacket = stats_recv.recv().unwrap();
+                while !next.terminate {
+                    let proposal = next.proposal.unwrap();
+                    partition.update(&proposal);
+                    writer
+                        .step(next.step, &graph, &partition, &proposal, &next.counts)
+                        .unwrap();
+                    next = stats_recv.recv().unwrap();
+                }
+                writer.close().unwrap();
+            });
+        }
+
+        // Start job threads.
         for t_idx in 0..n_threads {
             let job_r = job_recvs[t_idx].clone();
             let res_s = result_send.clone();
@@ -134,7 +173,7 @@ pub fn multi_chain(
                 let mut next: JobPacket = job_r.recv().unwrap();
                 while !next.terminate {
                     match next.diff {
-                        Some(diff) => partition.update(&graph, &diff),
+                        Some(diff) => partition.update(&diff),
                         None => {}
                     }
                     let mut counts = SelfLoopCounts::default();
@@ -146,16 +185,17 @@ pub fn multi_chain(
                             // Choose district pairs at random until finding an adjacent pair.
                             dist_a = rng.gen_range(0..partition.num_dists) as usize;
                             dist_b = rng.gen_range(0..partition.num_dists) as usize;
-                            if partition.dist_adj[(dist_a * partition.num_dists as usize) + dist_b]
-                                == 0
-                            {
+                            let num_dists = partition.num_dists;
+                            let dist_adj = partition.dist_adj(&graph);
+                            if dist_adj[(dist_a * num_dists as usize) + dist_b] == 0 {
                                 counts.inc(SelfLoopReason::NonAdjacent);
                                 continue;
                             }
                         } else {
                             // Sample a cut edge, which is guaranteed to yield a pair of adjacent districts.
-                            let cut_edge_idx = rng.gen_range(0..partition.cut_edges.len()) as usize;
-                            let edge_idx = partition.cut_edges[cut_edge_idx] as usize;
+                            let cut_edges = partition.cut_edges(&graph);
+                            let cut_edge_idx = rng.gen_range(0..cut_edges.len()) as usize;
+                            let edge_idx = cut_edges[cut_edge_idx] as usize;
                             dist_a = partition.assignments[graph.edges[edge_idx].0] as usize;
                             dist_b = partition.assignments[graph.edges[edge_idx].1] as usize;
                         }
@@ -224,7 +264,6 @@ pub fn multi_chain(
                 .unwrap();
             }
         }
-        writer.init(graph, partition).unwrap();
         let mut sampled = SelfLoopCounts::default();
         while step <= params.num_steps {
             let mut counts = SelfLoopCounts::default();
@@ -242,9 +281,11 @@ pub fn multi_chain(
                     step += 1;
                     let event = rng.gen_range(0..total);
                     if event < loops {
+                        // Case: no accepted proposal (don't need to update worker thread state).
                         sampled.inc(counts.index_and_dec(event).unwrap());
                         loops -= 1;
                     } else {
+                        // Case: accepted proposal (update worker thread state).
                         let proposal = &proposals[rng.gen_range(0..proposals.len())];
                         for job in job_sends.iter() {
                             job.send(JobPacket {
@@ -254,8 +295,13 @@ pub fn multi_chain(
                             })
                             .unwrap();
                         }
-                        writer
-                            .step(step, &graph, &partition, &proposal, &sampled)
+                        stats_send
+                            .send(StepPacket {
+                                step: step,
+                                proposal: Some(proposal.clone()),
+                                counts: sampled,
+                                terminate: false,
+                            })
                             .unwrap();
                         // Reset sampled rejection stats until the next accepted step.
                         sampled = SelfLoopCounts::default();
@@ -276,6 +322,8 @@ pub fn multi_chain(
                 }
             }
         }
+
+        // Terminate worker threads.
         for job in job_sends.iter() {
             job.send(JobPacket {
                 n_steps: batch_size,
@@ -284,7 +332,14 @@ pub fn multi_chain(
             })
             .unwrap();
         }
+        stats_send
+            .send(StepPacket {
+                step: step,
+                proposal: None,
+                counts: SelfLoopCounts::default(),
+                terminate: true,
+            })
+            .unwrap();
     })
     .unwrap();
-    writer.close().unwrap();
 }

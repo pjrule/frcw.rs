@@ -57,10 +57,9 @@ pub fn from_networkx(
         }
         pops.push(node[pop_col].as_u64().unwrap() as u32);
         neighbors.push(node_neighbors.clone());
-        // TODO: we assume that assignments are 1-indexed (and in the range 1..<# of
-        // districts>) and convert them to be 0-indexed.  This is not always the case
-        // in real data and can be inconvenient to fix.  We should remove this assumption.
-        assignments.push((node[assignment_col].as_u64().unwrap() - 1) as u32);
+        // TODO: we assume that assignments are 1-indexed. This is not always the case
+        // in real data and can be inconvenient to fix. We should remove this assumption.
+        assignments.push(node[assignment_col].as_u64().unwrap() as u32);
 
         for neighbor in &node_neighbors {
             if neighbor > &index {
@@ -71,29 +70,6 @@ pub fn from_networkx(
     }
 
     let total_pop = pops.iter().sum();
-    let num_dists = assignments.iter().max().unwrap() + 1;
-    let mut dist_nodes: Vec<Vec<usize>> = (0..num_dists).map(|_| Vec::<usize>::new()).collect();
-    for (index, assignment) in assignments.iter().enumerate() {
-        assert!(assignment < &num_dists);
-        dist_nodes[*assignment as usize].push(index);
-    }
-    let mut dist_adj = vec![0 as u32; (num_dists * num_dists) as usize];
-    let mut cut_edges = Vec::<usize>::new();
-    for (index, edge) in edges.iter().enumerate() {
-        let dist_a = assignments[edge.0 as usize];
-        let dist_b = assignments[edge.1 as usize];
-        assert!(dist_a < num_dists);
-        assert!(dist_b < num_dists);
-        if dist_a != dist_b {
-            dist_adj[((dist_a * num_dists) + dist_b) as usize] += 1;
-            dist_adj[((dist_b * num_dists) + dist_a) as usize] += 1;
-            cut_edges.push(index);
-        }
-    }
-    let mut dist_pops = vec![0 as u32; num_dists as usize];
-    for (index, pop) in pops.iter().enumerate() {
-        dist_pops[assignments[index] as usize] += pop;
-    }
 
     let graph = Graph {
         pops: pops,
@@ -103,13 +79,6 @@ pub fn from_networkx(
         total_pop: total_pop,
         attr: attr,
     };
-    let partition = Partition {
-        num_dists: num_dists,
-        assignments: assignments,
-        cut_edges: cut_edges,
-        dist_adj: dist_adj,
-        dist_pops: dist_pops,
-        dist_nodes: dist_nodes,
-    };
+    let partition = Partition::from_assignments(&graph, &assignments).unwrap();
     return Ok((graph, partition));
 }

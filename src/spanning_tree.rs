@@ -150,8 +150,8 @@ mod ust {
 /// Spanning tree sampling via random edge weights.
 mod rmst {
     use super::*;
-    use rand::seq::SliceRandom;
     use petgraph::unionfind::UnionFind;
+    use rand::seq::SliceRandom;
 
     /// Samples random spanning trees by sampling random edge weights and finding
     /// the minimum spanning tree.
