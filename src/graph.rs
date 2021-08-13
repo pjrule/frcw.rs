@@ -66,6 +66,9 @@ impl Graph {
             return Err("Empty edge list".to_string());
         }
         for line in edge_list.split('\n') {
+            if line.is_empty() {
+                continue;
+            }
             let indices: Vec<&str> = line.split(' ').collect();
             if indices.len() != 2 {
                 return Err(format!("Invalid line in edge list: {}", line));

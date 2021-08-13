@@ -165,9 +165,14 @@ impl Partition {
     /// Builds a partition from a space-delimited string representing a
     /// 1-indexed assignment vector.
     pub fn from_assignment_str(graph: &Graph, assignments: &str) -> Result<Partition, String> {
-        match assignments.split(' ').map(|a| a.parse::<u32>()).collect() {
+        match assignments
+            .replace('\n', "")
+            .split(' ')
+            .map(|a| a.parse::<u32>())
+            .collect()
+        {
             Ok(vec) => Partition::from_assignments(graph, &vec),
-            Err(_) => return Err("Could not parse assignments".to_string()),
+            Err(err) => Err(format!("Could not parse assignments: {}", err)),
         }
     }
 }

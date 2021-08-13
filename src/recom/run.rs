@@ -33,7 +33,7 @@ fn node_bound(pops: &Vec<u32>, max_pop: u32) -> usize {
     sorted_pops.sort();
     let mut node_bound = 0;
     let mut total = 0;
-    while total < 2 * max_pop {
+    while total < 2 * max_pop && node_bound < pops.len() {
         total += sorted_pops[node_bound];
         node_bound += 1;
     }
@@ -229,6 +229,15 @@ fn start_job_thread(
     }
 }
 
+fn next_batch(send: &Sender<JobPacket>, diff: Option<RecomProposal>, batch_size: usize) {
+    send.send(JobPacket {
+        n_steps: batch_size,
+        diff: diff,
+        terminate: false,
+    })
+    .unwrap();
+}
+
 /// Stops a ReCom job thread.
 fn stop_job_thread(send: &Sender<JobPacket>) {
     send.send(JobPacket {
@@ -338,12 +347,7 @@ pub fn multi_chain(
                         // Case: accepted proposal (update worker thread state).
                         let proposal = &proposals[rng.gen_range(0..proposals.len())];
                         for job in job_sends.iter() {
-                            job.send(JobPacket {
-                                n_steps: batch_size,
-                                diff: Some(proposal.clone()),
-                                terminate: false,
-                            })
-                            .unwrap();
+                            next_batch(job, Some(proposal.clone()), batch_size);
                         }
                         stats_send
                             .send(StepPacket {
@@ -363,12 +367,7 @@ pub fn multi_chain(
                 sampled = sampled + counts;
                 step += loops as u64;
                 for job in job_sends.iter() {
-                    job.send(JobPacket {
-                        n_steps: batch_size,
-                        diff: None,
-                        terminate: false,
-                    })
-                    .unwrap();
+                    next_batch(job, None, batch_size);
                 }
             }
         }
