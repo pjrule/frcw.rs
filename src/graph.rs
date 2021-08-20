@@ -47,8 +47,7 @@ impl Graph {
     /// Arguments:
     ///   * `edge_list`: The list of edges in the graph. Each line contains
     ///     two indices delimited by a space. Nodes are assumed to be labeled
-    ///     1..n, where n is the largest index that appears in the edge list.
-    ///     No edge ordering is assumed.
+    ///     0..n-1 or 1..n. No edge ordering is assumed.
     ///   * `populations`: The integer population of each node in the graph,
     ///     in index order.
     ///
@@ -61,7 +60,6 @@ impl Graph {
     /// (if that property is desired).
     pub fn from_edge_list(edge_list: &str, populations: &str) -> Result<Graph, String> {
         let mut edges = Vec::<Edge>::new();
-        let mut n = 0;
         if edge_list.is_empty() {
             return Err("Empty edge list".to_string());
         }
@@ -81,13 +79,21 @@ impl Graph {
                 Ok(idx) => idx,
                 Err(_) => return Err(format!("Could not parse edge index: {}", indices[1])),
             };
-            if src == 0 || dst == 0 {
-                return Err("Edges must be 1-indexed".to_string());
-            }
-            // convert to 0-indexing
-            let edge = Edge(min(src, dst) - 1, max(src, dst) - 1);
-            n = max(n, edge.1 + 1);
-            edges.push(edge);
+            edges.push(Edge(min(src, dst), max(src, dst)));
+        }
+        let min_index = edges.iter().map(|e| e.0).min().unwrap();
+        let max_index = edges.iter().map(|e| e.1).max().unwrap();
+        let n;
+        if min_index == 0 {
+            n = max_index + 1;
+        }
+        else if min_index == 1 {
+            // Fix 1-indexing.
+            n = max_index;
+            edges = edges.iter().map(|e| Edge(e.0 - 1, e.1 - 1)).collect();
+        }
+        else {
+            return Err(format!("Edges must be 0-indexed or 1-indexed, but minimum index is {}", min_index));
         }
         edges.sort();
         let mut edges_start = Vec::<usize>::new();
@@ -95,7 +101,6 @@ impl Graph {
         let mut src = edges[0].0;
         edges_start.push(0);
         for (idx, edge) in edges.iter().enumerate() {
-            println!("{}\t {} {}", idx, edge.0, edge.1);
             if edge.0 != src {
                 // Handle implicit nodes with no edges.
                 for _ in src..edge.0 {
@@ -115,7 +120,7 @@ impl Graph {
         }
 
         let mut parsed_pops = Vec::<u32>::with_capacity(neighbors.len());
-        for pop in populations.split(' ') {
+        for pop in populations.replace('\n', "").split(' ') {
             match pop.parse::<u32>() {
                 Ok(parsed) => parsed_pops.push(parsed),
                 Err(_) => return Err(format!("Could not parse population value: {}", pop)),
@@ -330,12 +335,6 @@ mod tests {
     #[should_panic(expected = "Invalid line in edge list: 1,2")]
     fn from_edge_list_invalid_edge_list() {
         Graph::from_edge_list("1,2\n2 3", "1 2").unwrap();
-    }
-
-    #[test]
-    #[should_panic(expected = "Edges must be 1-indexed")]
-    fn from_edge_list_zero_indexed() {
-        Graph::from_edge_list("0 1\n1 2", "1 2").unwrap();
     }
 
     #[test]
