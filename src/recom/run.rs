@@ -8,7 +8,8 @@
 //! is multithreaded and prints accepted proposals to `stdout` in TSV format.
 //! It also collects rejection/self-loop statistics.
 use super::{
-    cut_edge_dist_pair, random_split, uniform_dist_pair, RecomParams, RecomProposal, RecomVariant,
+    cut_edge_dist_pair, node_bound, random_split, uniform_dist_pair, RecomParams, RecomProposal,
+    RecomVariant,
 };
 use crate::buffers::{SpanningTreeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
@@ -23,22 +24,6 @@ use rand::{Rng, SeedableRng};
 /// Determines how many proposals the stats thread can lag behind by
 /// (compared to the head of the chain).
 const STATS_CHANNEL_CAPACITY: usize = 16;
-
-/// Returns the maximum number of nodes in two districts based on node
-/// populations (`pop`) and the maximum district population (`max_pop`).
-///
-/// Used to choose buffer sizes for recombination steps.
-fn node_bound(pops: &Vec<u32>, max_pop: u32) -> usize {
-    let mut sorted_pops = pops.clone();
-    sorted_pops.sort();
-    let mut node_bound = 0;
-    let mut total = 0;
-    while total < 2 * max_pop && node_bound < pops.len() {
-        total += sorted_pops[node_bound];
-        node_bound += 1;
-    }
-    return node_bound + 1;
-}
 
 /// A unit of multithreaded work.
 struct JobPacket {

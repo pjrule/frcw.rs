@@ -4,22 +4,25 @@ use crate::partition::Partition;
 use crate::recom::RecomProposal;
 use std::collections::HashMap;
 
-/// Computes sums over statistics for all districts in a proposal.
+/// Computes sums over all statistics for all districts in a proposal.
 pub fn partition_sums(graph: &Graph, partition: &Partition) -> HashMap<String, Vec<u32>> {
-    return graph
+    graph
         .attr
         .iter()
-        .map(|(key, values)| {
-            // TODO: check this invariant elsewhere.
-            assert!(values.len() == graph.neighbors.len());
-            let dist_sums = partition
-                .dist_nodes
-                .iter()
-                .map(|nodes| nodes.iter().map(|&n| values[n]).sum())
-                .collect();
-            return (key.clone(), dist_sums);
-        })
-        .collect();
+        .map(|(key, _)| (key.clone(), partition_attr_sums(graph, partition, key)))
+        .collect()
+}
+
+/// Computes sums over a single statistic for all districts in a proposal.
+pub fn partition_attr_sums(graph: &Graph, partition: &Partition, attr: &str) -> Vec<u32> {
+    let values = graph.attr.get(attr).unwrap();
+    // TODO: check this invariant elsewhere.
+    assert!(values.len() == graph.neighbors.len());
+    partition
+        .dist_nodes
+        .iter()
+        .map(|nodes| nodes.iter().map(|&n| values[n]).sum())
+        .collect()
 }
 
 /// Computes sums over statistics for the two new districts in a proposal.

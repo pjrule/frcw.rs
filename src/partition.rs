@@ -82,7 +82,7 @@ impl Partition {
     }
 
     /// Copies the subgraph induced by the union of districts `a` and `b`
-    /// into a buffer.
+    /// into a buffer. (Node attributes are omitted.)
     ///
     /// The resulting subgraph has relabeled node IDs: nodes
     /// [0..# of nodes in district `a`] are from district `a`, and the
@@ -119,6 +119,31 @@ impl Partition {
             buf.graph.pops.push(graph.pops[node]);
         }
         buf.graph.total_pop = self.dist_pops[a] + self.dist_pops[b];
+    }
+
+    /// Copies the subgraph induced by the union of districts `a` and `b`
+    /// into a buffer. Similar to `subgraph`, but node attributes are
+    /// also copied.
+    /// 
+    /// # Arguments
+    ///
+    /// * `graph` - The underlying graph of the [Partition].
+    /// * `buf` - The buffer to copy the nodes into.
+    /// * `a` - The label of the `a`-district.
+    /// * `b` - The label of the `b`-district.
+    pub fn subgraph_with_attr(&self, graph: &Graph, buf: &mut SubgraphBuffer, a: usize, b: usize) {
+        self.subgraph(graph, buf, a, b);
+        for (key, vals) in graph.attr.iter() {
+            if buf.graph.attr.contains_key(key) {
+                buf.graph.attr.get_mut(key).unwrap().clear();
+            } else {
+                buf.graph.attr.insert(key.to_string(), Vec::<u32>::with_capacity(buf.raw_nodes.len()));
+            }
+            let buf_vals = buf.graph.attr.get_mut(key).unwrap();
+            for &node in buf.raw_nodes.iter() {
+                buf_vals.push(vals[node]);
+            }
+        }
     }
 
     /// Builds a partition from a 1-indexed assignment vector.

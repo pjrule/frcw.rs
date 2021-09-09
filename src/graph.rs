@@ -86,14 +86,15 @@ impl Graph {
         let n;
         if min_index == 0 {
             n = max_index + 1;
-        }
-        else if min_index == 1 {
+        } else if min_index == 1 {
             // Fix 1-indexing.
             n = max_index;
             edges = edges.iter().map(|e| Edge(e.0 - 1, e.1 - 1)).collect();
-        }
-        else {
-            return Err(format!("Edges must be 0-indexed or 1-indexed, but minimum index is {}", min_index));
+        } else {
+            return Err(format!(
+                "Edges must be 0-indexed or 1-indexed, but minimum index is {}",
+                min_index
+            ));
         }
         edges.sort();
         let mut edges_start = Vec::<usize>::new();

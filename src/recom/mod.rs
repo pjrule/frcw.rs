@@ -6,6 +6,8 @@ use rand::rngs::SmallRng;
 use rand::Rng;
 use std::result::Result;
 
+/// ReCom-based optimization.
+pub mod opt;
 /// ReCom batch size autotuning.
 //mod autotune;
 /// ReCom runners.
@@ -281,4 +283,20 @@ pub fn random_split(
     proposal.a_pop = a_pop;
     proposal.b_pop = subgraph.total_pop - a_pop;
     return Ok(buf.balance_nodes.len());
+}
+
+/// Returns the maximum number of nodes in two districts based on node
+/// populations (`pop`) and the maximum district population (`max_pop`).
+///
+/// Used to choose buffer sizes for recombination steps.
+fn node_bound(pops: &Vec<u32>, max_pop: u32) -> usize {
+    let mut sorted_pops = pops.clone();
+    sorted_pops.sort();
+    let mut node_bound = 0;
+    let mut total = 0;
+    while total < 2 * max_pop && node_bound < pops.len() {
+        total += sorted_pops[node_bound];
+        node_bound += 1;
+    }
+    return node_bound + 1;
 }
