@@ -4,6 +4,7 @@ use crate::graph::Graph;
 use crate::partition::Partition;
 use rand::rngs::SmallRng;
 use rand::Rng;
+use std::collections::HashMap;
 use std::result::Result;
 
 /// ReCom-based optimization.
@@ -63,10 +64,27 @@ pub enum RecomVariant {
     /// sampled by drawing edge weights uniformly at random and finding
     /// the minimum spanning tree.
     DistrictPairsRMST,
+    /// Normal (non-reversible) ReCom with district pairs selected by
+    /// choosing a random cut edge. Spanning trees are sampled by drawing
+    /// edge weights at random and finding the minimum spanning tree;
+    /// the weights on edges between regions (where regions might be counties,
+    /// municipalities, or other geographies, potentially nested in a hierarchy)
+    /// are sampled from different distributions than other edges such that
+    /// districts are preferentially cut along region lines.
+    CutEdgesRegionAware,
+    // Normal (non-reversible) ReCom with district pairs selected by
+    /// choosing random pairs of district indices until an adjacent pair
+    /// is found. Non-adjacent pairs are self-loops. Spanning trees are sampled by
+    /// drawing edge weights at random and finding the minimum spanning tree;
+    /// the weights on edges between regions (where regions might be counties,
+    /// municipalities, or other geographies, potentially nested in a hierarchy)
+    /// are sampled from different distributions than other edges such that
+    /// districts are preferentially cut along region lines.
+    DistrictPairsRegionAware,
 }
 
 /// The parameters of a ReCom chain run.
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct RecomParams {
     /// The minimum population of a district.
     pub min_pop: u32,
@@ -83,6 +101,8 @@ pub struct RecomParams {
     pub rng_seed: u64,
     /// The type of ReCom chain to run.
     pub variant: RecomVariant,
+    /// Weight parameters for region-aware ReCom (if applicable).
+    pub region_weights: Option<HashMap<String, f64>>,
 }
 
 impl RecomProposal {
@@ -180,6 +200,7 @@ fn cut_edge_dist_pair(
 /// * `subgraph_map` - A map between the node IDs in the subgraph and the node IDs
 ///   of the parent graph. (Proposals use the node IDs in the parent graph.)
 /// * `params` - The parameters of the parent ReCom chain.
+///
 pub fn random_split(
     subgraph: &Graph,
     rng: &mut SmallRng,
@@ -191,9 +212,29 @@ pub fn random_split(
     subgraph_map: &Vec<usize>,
     params: &RecomParams,
 ) -> Result<usize, String> {
-    // TODO: split up into smaller private methods.
+    // Find ε-balanced cuts (if any), then choose a cut at random if possible.
+    match balanced_cuts(subgraph, rng, mst, buf, params) {
+        Err(e) => Err(e),
+        Ok(_) => Ok(choose_random_cut(
+            subgraph,
+            buf,
+            proposal,
+            subgraph_map,
+            a,
+            b,
+        )),
+    }
+}
+
+/// Finds ε-balanced cuts (if any) in a spanning tree.
+fn balanced_cuts(
+    subgraph: &Graph,
+    rng: &mut SmallRng,
+    mst: &SpanningTree,
+    buf: &mut SplitBuffer,
+    params: &RecomParams,
+) -> Result<(), String> {
     buf.clear();
-    proposal.clear();
     let n = subgraph.pops.len();
     let mut root = 0;
     while root < n {
@@ -260,6 +301,20 @@ pub fn random_split(
     }
     let balance_node = buf.balance_nodes[rng.gen_range(0..buf.balance_nodes.len())];
     buf.deque.push_back(balance_node);
+    Ok(())
+}
+
+/// Chooses a random cut from a nonempty set of available ε-balanced cuts
+/// and generates the ReCom proposal induced by the cut.
+fn choose_random_cut(
+    subgraph: &Graph,
+    buf: &mut SplitBuffer,
+    proposal: &mut RecomProposal,
+    subgraph_map: &Vec<usize>,
+    a: usize,
+    b: usize,
+) -> usize {
+    proposal.clear();
 
     // Extract the nodes for a random cut.
     let mut a_pop = 0;
@@ -273,7 +328,7 @@ pub fn random_split(
             }
         }
     }
-    for index in 0..n {
+    for index in 0..subgraph.pops.len() {
         if !buf.in_a[index] {
             proposal.b_nodes.push(subgraph_map[index]);
         }
@@ -282,7 +337,7 @@ pub fn random_split(
     proposal.b_label = b;
     proposal.a_pop = a_pop;
     proposal.b_pop = subgraph.total_pop - a_pop;
-    return Ok(buf.balance_nodes.len());
+    buf.balance_nodes.len()
 }
 
 /// Returns the maximum number of nodes in two districts based on node

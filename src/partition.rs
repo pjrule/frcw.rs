@@ -124,7 +124,7 @@ impl Partition {
     /// Copies the subgraph induced by the union of districts `a` and `b`
     /// into a buffer. Similar to `subgraph`, but node attributes are
     /// also copied.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `graph` - The underlying graph of the [Partition].
@@ -137,7 +137,10 @@ impl Partition {
             if buf.graph.attr.contains_key(key) {
                 buf.graph.attr.get_mut(key).unwrap().clear();
             } else {
-                buf.graph.attr.insert(key.to_string(), Vec::<u32>::with_capacity(buf.raw_nodes.len()));
+                buf.graph.attr.insert(
+                    key.to_string(),
+                    Vec::<u32>::with_capacity(buf.raw_nodes.len()),
+                );
             }
             let buf_vals = buf.graph.attr.get_mut(key).unwrap();
             for &node in buf.raw_nodes.iter() {

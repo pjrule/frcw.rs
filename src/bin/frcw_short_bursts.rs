@@ -4,20 +4,22 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{value_t, App, Arg};
-use frcw::init::from_networkx;
 use frcw::graph::Graph;
+use frcw::init::from_networkx;
 use frcw::partition::Partition;
-use frcw::stats::partition_attr_sums;
 use frcw::recom::opt::{multi_short_bursts, ScoreValue};
 use frcw::recom::{RecomParams, RecomVariant};
+use frcw::stats::partition_attr_sums;
 use serde_json::json;
 use serde_json::Value;
 use sha3::{Digest, Sha3_256};
-use std::path::PathBuf;
 use std::marker::Send;
+use std::path::PathBuf;
 use std::{fs, io};
 
-fn make_objective_fn(objective_config: &str) -> impl Fn(&Graph, &Partition)->ScoreValue + Send + Clone + Copy {
+fn make_objective_fn(
+    objective_config: &str,
+) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy {
     let data: Value = serde_json::from_str(objective_config).unwrap();
     let obj_type = data["objective"].as_str().unwrap();
 
@@ -30,8 +32,20 @@ fn make_objective_fn(objective_config: &str) -> impl Fn(&Graph, &Partition)->Sco
 
     // A hack to share strings between threads:
     // https://stackoverflow.com/a/52367953
-    let min_pop_col = &*Box::leak(data["min_pop"].as_str().unwrap().to_owned().into_boxed_str());
-    let total_pop_col = &*Box::leak(data["total_pop"].as_str().unwrap().to_owned().into_boxed_str());
+    let min_pop_col = &*Box::leak(
+        data["min_pop"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+            .into_boxed_str(),
+    );
+    let total_pop_col = &*Box::leak(
+        data["total_pop"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+            .into_boxed_str(),
+    );
 
     move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let min_pops = partition_attr_sums(graph, partition, min_pop_col);
@@ -40,7 +54,7 @@ fn make_objective_fn(objective_config: &str) -> impl Fn(&Graph, &Partition)->Sco
             .iter()
             .zip(total_pops.iter())
             .map(|(&m, &t)| m as f64 / t as f64)
-           .collect();
+            .collect();
         let opportunity_count = shares.iter().filter(|&s| s >= &threshold).count();
 
         // partial ordering on f64:
@@ -135,9 +149,9 @@ fn main() {
         );
     let matches = cli.get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
+    let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
     let tol = value_t!(matches.value_of("tol"), f64).unwrap_or_else(|e| e.exit());
-    let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
     let burst_length =
         value_t!(matches.value_of("burst_length"), usize).unwrap_or_else(|e| e.exit());
     let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap()))
@@ -166,6 +180,7 @@ fn main() {
         rng_seed: rng_seed,
         balance_ub: 0,
         variant: RecomVariant::DistrictPairsRMST,
+        region_weights: None,
     };
 
     let mut graph_file = fs::File::open(&graph_json).unwrap();
@@ -190,7 +205,7 @@ fn main() {
     let partition = multi_short_bursts(
         &graph,
         partition,
-        params,
+        &params,
         n_threads,
         objective_fn,
         burst_length,

@@ -8,8 +8,9 @@ use frcw::init::from_networkx;
 use frcw::recom::run::multi_chain;
 use frcw::recom::{RecomParams, RecomVariant};
 use frcw::stats::{JSONLWriter, StatsWriter, TSVWriter};
-use serde_json::json;
+use serde_json::{from_str, json, Value};
 use sha3::{Digest, Sha3_256};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::{fs, io};
 
@@ -99,6 +100,12 @@ fn main() {
                 .long("sum-cols")
                 .multiple(true)
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("region_weights")
+                .long("region-weights")
+                .takes_value(true)
+                .help("Region columns with weights for region-aware ReCom."),
         );
     if cfg!(feature = "linalg") {
         cli = cli.arg(Arg::with_name("spanning_tree_counts").long("st-counts"));
@@ -125,13 +132,16 @@ fn main() {
         .unwrap_or_default()
         .map(|c| c.to_string())
         .collect();
+    let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
 
     let variant = match variant_str {
         "reversible" => RecomVariant::Reversible,
         "cut-edges-ust" => RecomVariant::CutEdgesUST,
         "cut-edges-rmst" => RecomVariant::CutEdgesRMST,
+        "cut-edges-region-aware" => RecomVariant::CutEdgesRegionAware,
         "district-pairs-ust" => RecomVariant::DistrictPairsUST,
         "district-pairs-rmst" => RecomVariant::DistrictPairsRMST,
+        "district-pairs-region-aware" => RecomVariant::DistrictPairsRegionAware,
         bad => panic!("Parameter error: invalid variant '{}'", bad),
     };
     let writer: Box<dyn StatsWriter> = match writer_str {
@@ -148,6 +158,16 @@ fn main() {
 
     let (graph, partition) = from_networkx(&graph_json, pop_col, assignment_col, sum_cols).unwrap();
     let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
+    let region_weights = match region_weights_raw {
+        "" => None,
+        weights => Some(
+            from_str::<HashMap<&str, Value>>(weights)
+                .unwrap()
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.as_f64().unwrap()))
+                .collect(),
+        ),
+    };
     let params = RecomParams {
         min_pop: ((1.0 - tol) * avg_pop as f64).floor() as u32,
         max_pop: ((1.0 + tol) * avg_pop as f64).ceil() as u32,
@@ -155,6 +175,7 @@ fn main() {
         rng_seed: rng_seed,
         balance_ub: balance_ub,
         variant: variant,
+        region_weights: region_weights.clone(),
     };
 
     let mut graph_file = fs::File::open(&graph_json).unwrap();
@@ -180,6 +201,11 @@ fn main() {
             .unwrap()
             .insert("balance_ub".to_string(), json!(balance_ub));
     }
+    if region_weights.is_some() {
+        meta.as_object_mut()
+            .unwrap()
+            .insert("region_weights".to_string(), json!(region_weights));
+    }
     println!("{}", json!({ "meta": meta }).to_string());
-    multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
+    multi_chain(&graph, &partition, writer, &params, n_threads, batch_size);
 }

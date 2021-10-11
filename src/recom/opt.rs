@@ -38,7 +38,6 @@ struct OptResultPacket {
     best_score: Option<ScoreValue>,
 }
 
-
 /// Starts a ReCom optimization thread.
 /// ReCom optimization threads run short ReCom chains ("short bursts"), which
 /// are then aggregated by the main thread.
@@ -57,7 +56,7 @@ fn start_opt_thread(
     graph: Graph,
     mut partition: Partition,
     params: RecomParams,
-    obj_fn: impl Fn(&Graph, &Partition)->ScoreValue + Send + Clone + Copy,
+    obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
     rng_seed: u64,
     buf_size: usize,
     job_recv: Receiver<OptJobPacket>,
@@ -168,9 +167,9 @@ fn stop_opt_thread(send: &Sender<OptJobPacket>) {
 pub fn multi_short_bursts(
     graph: &Graph,
     mut partition: Partition,
-    params: RecomParams,
+    params: &RecomParams,
     n_threads: usize,
-    obj_fn: impl Fn(&Graph, &Partition)->ScoreValue + Send + Clone + Copy,
+    obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
     burst_length: usize,
     verbose: bool,
 ) -> Partition {
