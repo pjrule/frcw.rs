@@ -122,18 +122,27 @@ impl Partition {
     }
 
     /// Copies the subgraph induced by the union of districts `a` and `b`
-    /// into a buffer. Similar to `subgraph`, but node attributes are
-    /// also copied.
+    /// into a buffer. Similar to `subgraph`, but *selected* node attributes
+    /// are also copied.
     ///
     /// # Arguments
     ///
     /// * `graph` - The underlying graph of the [Partition].
     /// * `buf` - The buffer to copy the nodes into.
+    /// * `attrs` - The node attributes to copy.
     /// * `a` - The label of the `a`-district.
     /// * `b` - The label of the `b`-district.
-    pub fn subgraph_with_attr(&self, graph: &Graph, buf: &mut SubgraphBuffer, a: usize, b: usize) {
+    pub fn subgraph_with_attr_subset<'a>(
+        &self,
+        graph: &Graph,
+        buf: &mut SubgraphBuffer,
+        attrs: impl Iterator<Item = &'a String>,
+        a: usize,
+        b: usize,
+    ) {
         self.subgraph(graph, buf, a, b);
-        for (key, vals) in graph.attr.iter() {
+        for key in attrs {
+            let vals = graph.attr.get(key).unwrap();
             if buf.graph.attr.contains_key(key) {
                 buf.graph.attr.get_mut(key).unwrap().clear();
             } else {
@@ -147,6 +156,20 @@ impl Partition {
                 buf_vals.push(vals[node]);
             }
         }
+    }
+
+    /// Copies the subgraph induced by the union of districts `a` and `b`
+    /// into a buffer. Similar to `subgraph`, but *all* node attributes are
+    /// also copied.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph` - The underlying graph of the [Partition].
+    /// * `buf` - The buffer to copy the nodes into.
+    /// * `a` - The label of the `a`-district.
+    /// * `b` - The label of the `b`-district.
+    pub fn subgraph_with_attr(&self, graph: &Graph, buf: &mut SubgraphBuffer, a: usize, b: usize) {
+        self.subgraph_with_attr_subset(graph, buf, graph.attr.keys(), a, b);
     }
 
     /// Builds a partition from a 1-indexed assignment vector.

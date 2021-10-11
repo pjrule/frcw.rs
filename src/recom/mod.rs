@@ -4,7 +4,6 @@ use crate::graph::Graph;
 use crate::partition::Partition;
 use rand::rngs::SmallRng;
 use rand::Rng;
-use std::collections::HashMap;
 use std::result::Result;
 
 /// ReCom-based optimization.
@@ -101,8 +100,9 @@ pub struct RecomParams {
     pub rng_seed: u64,
     /// The type of ReCom chain to run.
     pub variant: RecomVariant,
-    /// Weight parameters for region-aware ReCom (if applicable).
-    pub region_weights: Option<HashMap<String, f64>>,
+    /// Weight parameters for region-aware ReCom, ordered by importance
+    /// (highest to lowest).
+    pub region_weights: Option<Vec<(String, f64)>>,
 }
 
 impl RecomProposal {
@@ -200,7 +200,6 @@ fn cut_edge_dist_pair(
 /// * `subgraph_map` - A map between the node IDs in the subgraph and the node IDs
 ///   of the parent graph. (Proposals use the node IDs in the parent graph.)
 /// * `params` - The parameters of the parent ReCom chain.
-///
 pub fn random_split(
     subgraph: &Graph,
     rng: &mut SmallRng,

@@ -14,7 +14,7 @@ use super::{
 use crate::buffers::{SpanningTreeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
 use crate::partition::Partition;
-use crate::spanning_tree::{RMSTSampler, SpanningTreeSampler, USTSampler};
+use crate::spanning_tree::{RMSTSampler, RegionAwareSampler, SpanningTreeSampler, USTSampler};
 use crate::stats::{SelfLoopCounts, SelfLoopReason, StatsWriter};
 use crossbeam::scope;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
@@ -120,11 +120,30 @@ fn start_job_thread(
     let reversible = params.variant == RecomVariant::Reversible;
     let sample_district_pairs = reversible
         || params.variant == RecomVariant::DistrictPairsUST
-        || params.variant == RecomVariant::DistrictPairsRMST;
+        || params.variant == RecomVariant::DistrictPairsRMST
+        || params.variant == RecomVariant::DistrictPairsRegionAware;
     let rmst = params.variant == RecomVariant::CutEdgesRMST
-        || params.variant == RecomVariant::DistrictPairsRMST;
+        || params.variant == RecomVariant::DistrictPairsRMST
+        || params.variant == RecomVariant::DistrictPairsRegionAware
+        || params.variant == RecomVariant::CutEdgesRMST
+        || params.variant == RecomVariant::CutEdgesRegionAware;
+    let region_aware = params.variant == RecomVariant::CutEdgesRegionAware
+        || params.variant == RecomVariant::DistrictPairsRegionAware;
 
-    if rmst {
+    let mut region_aware_attrs: Vec<String> = vec![];
+    if region_aware {
+        st_sampler = Box::new(RegionAwareSampler::new(
+            buf_size,
+            params.region_weights.clone().unwrap(),
+        ));
+        region_aware_attrs = params
+            .region_weights
+            .clone()
+            .unwrap()
+            .iter()
+            .map(|(col, _)| col.to_owned())
+            .collect();
+    } else if rmst {
         st_sampler = Box::new(RMSTSampler::new(buf_size));
     } else {
         st_sampler = Box::new(USTSampler::new(buf_size, &mut rng));
@@ -160,7 +179,19 @@ fn start_job_thread(
                 dist_a = a;
                 dist_b = b;
             }
-            partition.subgraph(&graph, &mut subgraph_buf, dist_a, dist_b);
+            if region_aware {
+                // Region-aware ReCom requires extra node-level metadata
+                // (region assignments, e.g. county IDs).
+                partition.subgraph_with_attr_subset(
+                    &graph,
+                    &mut subgraph_buf,
+                    region_aware_attrs.iter(),
+                    dist_a,
+                    dist_b,
+                );
+            } else {
+                partition.subgraph(&graph, &mut subgraph_buf, dist_a, dist_b);
+            }
 
             // Step 2: draw a random spanning tree of the subgraph induced by the
             // two districts.
