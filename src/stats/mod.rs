@@ -16,4 +16,4 @@ pub use crate::stats::self_loops::{SelfLoopCounts, SelfLoopReason};
 #[cfg(feature = "linalg")]
 pub use crate::stats::spanning_trees::subgraph_spanning_tree_count;
 pub use crate::stats::sums::{partition_attr_sums, partition_sums, proposal_sums};
-pub use crate::stats::writers::{AssignmentsOnlyWriter, JSONLWriter, StatsWriter, TSVWriter};
+pub use crate::stats::writers::{AssignmentsOnlyWriter, JSONLWriter, StatsWriter, TSVWriter, PcompressWriter};

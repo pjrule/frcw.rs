@@ -16,6 +16,7 @@ sha3 = "0.9.1"
 petgraph = "0.6.0"
 ndarray = { version = "0.14", optional = true }
 ndarray-linalg = { version = "0.13", features = ["openblas-system"], optional = true }
+pcompress = "1.0.6"
 
 [dev-dependencies]
 rstest = "0.10.0"

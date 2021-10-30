@@ -5,7 +5,9 @@ use crate::recom::RecomProposal;
 use crate::stats::subgraph_spanning_tree_count;
 use crate::stats::{partition_sums, proposal_sums, SelfLoopCounts, SelfLoopReason};
 use serde_json::{json, Value};
-use std::io::Result;
+use std::io::{Result, BufWriter, stdout, Write, Stdout};
+use pcompress::diff::Diff;
+use pcompress::encode::export_diff;
 
 /// A standard interface for writing steps and statistics to stdout.
 /// TODO: allow direct output to a file (e.g. in Parquet format).
@@ -50,6 +52,14 @@ pub struct TSVWriter {}
 /// Writes assignments in space-delimited format (with step number prefix).
 pub struct AssignmentsOnlyWriter {}
 
+/// Writes assignments in Max Fan's `pcompress` binary format.
+pub struct PcompressWriter {
+    /// A buffered writer wrapping stdout used internally by pcompress.
+    writer: BufWriter<Stdout>,
+    /// Diff buffer (reused across steps).
+    diff: Diff,
+}
+
 /// Writes statistics in JSONL (JSON Lines) format.
 pub struct JSONLWriter {
     /// Determines whether node deltas should be saved for each step.
@@ -60,22 +70,23 @@ pub struct JSONLWriter {
 
 impl TSVWriter {
     pub fn new() -> TSVWriter {
-        return TSVWriter {};
+        TSVWriter {}
     }
 }
 
 impl AssignmentsOnlyWriter {
     pub fn new() -> AssignmentsOnlyWriter {
-        return AssignmentsOnlyWriter {};
+        AssignmentsOnlyWriter {}
     }
 }
 
+
 impl JSONLWriter {
     pub fn new(nodes: bool, spanning_tree_counts: bool) -> JSONLWriter {
-        return JSONLWriter {
+        JSONLWriter {
             nodes: nodes,
             spanning_tree_counts: spanning_tree_counts,
-        };
+        }
     }
 
     #[cfg(feature = "linalg")]
@@ -217,5 +228,54 @@ impl StatsWriter for AssignmentsOnlyWriter {
 
     fn close(&mut self) -> Result<()> {
         Ok(())
+    }
+}
+
+impl PcompressWriter {
+    pub fn new()  -> PcompressWriter {
+        PcompressWriter {
+            writer: BufWriter::new(stdout()),
+            diff: Diff::new(),
+        }
+    }
+}
+
+impl StatsWriter for PcompressWriter {
+    fn init(&mut self, _graph: &Graph, partition: &Partition) -> Result<()> {
+        for (node, &dist) in partition.assignments.iter().enumerate() {
+            self.diff.add(dist as usize, node);
+        }
+        export_diff(&mut self.writer, &self.diff); 
+        Ok(())
+    }
+
+    fn step(
+        &mut self,
+        _step: u64,
+        _graph: &Graph,
+        _partition: &Partition,
+        proposal: &RecomProposal,
+        counts: &SelfLoopCounts,
+    ) -> Result<()> {
+        // Write out the actual delta.
+        self.diff.reset();
+        for &node in proposal.a_nodes.iter() {
+            self.diff.add(proposal.a_label, node);
+        }
+        for &node in proposal.b_nodes.iter() {
+            self.diff.add(proposal.b_label, node);
+        }
+        export_diff(&mut self.writer, &self.diff);
+
+        // Write out self-loops.
+        self.diff.reset();
+        for _ in 0..counts.sum() {
+            export_diff(&mut self.writer, &self.diff);
+        }
+        Ok(())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.writer.flush()
     }
 }

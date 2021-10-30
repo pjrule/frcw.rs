@@ -7,7 +7,7 @@ use clap::{value_t, App, Arg};
 use frcw::init::from_networkx;
 use frcw::recom::run::multi_chain;
 use frcw::recom::{RecomParams, RecomVariant};
-use frcw::stats::{JSONLWriter, StatsWriter, TSVWriter};
+use frcw::stats::{JSONLWriter, StatsWriter, TSVWriter, PcompressWriter};
 use serde_json::{from_str, json, Value};
 use sha3::{Digest, Sha3_256};
 use std::path::PathBuf;
@@ -147,6 +147,7 @@ fn main() {
     let writer: Box<dyn StatsWriter> = match writer_str {
         "tsv" => Box::new(TSVWriter::new()),
         "jsonl" => Box::new(JSONLWriter::new(false, st_counts)),
+        "pcompress" => Box::new(PcompressWriter::new()),
         "jsonl-full" => Box::new(JSONLWriter::new(true, st_counts)),
         bad => panic!("Parameter error: invalid writer '{}'", bad),
     };

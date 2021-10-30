@@ -212,10 +212,11 @@ pub fn random_split(
     params: &RecomParams,
 ) -> Result<usize, String> {
     // Find ε-balanced cuts (if any), then choose a cut at random if possible.
-    match balanced_cuts(subgraph, rng, mst, buf, params) {
+    match balanced_cuts(subgraph, mst, buf, params) {
         Err(e) => Err(e),
         Ok(_) => Ok(choose_random_cut(
             subgraph,
+            rng,
             buf,
             proposal,
             subgraph_map,
@@ -228,7 +229,6 @@ pub fn random_split(
 /// Finds ε-balanced cuts (if any) in a spanning tree.
 fn balanced_cuts(
     subgraph: &Graph,
-    rng: &mut SmallRng,
     mst: &SpanningTree,
     buf: &mut SplitBuffer,
     params: &RecomParams,
@@ -298,8 +298,6 @@ fn balanced_cuts(
     if buf.balance_nodes.is_empty() {
         return Err("no balanced cuts".to_string());
     }
-    let balance_node = buf.balance_nodes[rng.gen_range(0..buf.balance_nodes.len())];
-    buf.deque.push_back(balance_node);
     Ok(())
 }
 
@@ -307,6 +305,7 @@ fn balanced_cuts(
 /// and generates the ReCom proposal induced by the cut.
 fn choose_random_cut(
     subgraph: &Graph,
+    rng: &mut SmallRng,
     buf: &mut SplitBuffer,
     proposal: &mut RecomProposal,
     subgraph_map: &Vec<usize>,
@@ -315,7 +314,11 @@ fn choose_random_cut(
 ) -> usize {
     proposal.clear();
 
-    // Extract the nodes for a random cut.
+    // Choose a random balance node.
+    let balance_node = buf.balance_nodes[rng.gen_range(0..buf.balance_nodes.len())];
+    buf.deque.push_back(balance_node);
+
+    // Extract the nodes for the random cut.
     let mut a_pop = 0;
     while let Some(next) = buf.deque.pop_front() {
         if !buf.in_a[next] {
