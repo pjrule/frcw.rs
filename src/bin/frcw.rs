@@ -4,15 +4,15 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{value_t, App, Arg};
+use frcw::config::parse_region_weights_config;
 use frcw::init::from_networkx;
 use frcw::recom::run::multi_chain;
 use frcw::recom::{RecomParams, RecomVariant};
-use frcw::stats::{JSONLWriter, StatsWriter, TSVWriter, PcompressWriter};
-use serde_json::{from_str, json, Value};
+use frcw::stats::{JSONLWriter, PcompressWriter, StatsWriter, TSVWriter};
+use serde_json::json;
 use sha3::{Digest, Sha3_256};
 use std::path::PathBuf;
 use std::{fs, io};
-use std::collections::HashMap;
 
 fn main() {
     let mut cli = App::new("frcw")
@@ -159,20 +159,7 @@ fn main() {
 
     let (graph, partition) = from_networkx(&graph_json, pop_col, assignment_col, sum_cols).unwrap();
     let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
-    let region_weights = match region_weights_raw {
-        "" => None,
-        raw => {
-            let mut weights: Vec<(String, f64)> = from_str::<HashMap<&str, Value>>(raw)
-                .unwrap()
-                .into_iter()
-                .map(|(k, v)| (k.to_owned(), v.as_f64().unwrap()))
-                .collect();
-            // Sort region weights in descending order (highest priority -> lowest priority).
-            weights.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().reverse());
-            Some(weights)
-        }
-    };
-    println!("region weights: {:?}", region_weights);
+    let region_weights = parse_region_weights_config(region_weights_raw);
 
     let params = RecomParams {
         min_pop: ((1.0 - tol) * avg_pop as f64).floor() as u32,

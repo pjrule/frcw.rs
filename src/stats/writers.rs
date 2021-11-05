@@ -4,10 +4,10 @@ use crate::recom::RecomProposal;
 #[cfg(feature = "linalg")]
 use crate::stats::subgraph_spanning_tree_count;
 use crate::stats::{partition_sums, proposal_sums, SelfLoopCounts, SelfLoopReason};
-use serde_json::{json, Value};
-use std::io::{Result, BufWriter, stdout, Write, Stdout};
 use pcompress::diff::Diff;
 use pcompress::encode::export_diff;
+use serde_json::{json, Value};
+use std::io::{stdout, BufWriter, Result, Stdout, Write};
 
 /// A standard interface for writing steps and statistics to stdout.
 /// TODO: allow direct output to a file (e.g. in Parquet format).
@@ -79,7 +79,6 @@ impl AssignmentsOnlyWriter {
         AssignmentsOnlyWriter {}
     }
 }
-
 
 impl JSONLWriter {
     pub fn new(nodes: bool, spanning_tree_counts: bool) -> JSONLWriter {
@@ -232,7 +231,7 @@ impl StatsWriter for AssignmentsOnlyWriter {
 }
 
 impl PcompressWriter {
-    pub fn new()  -> PcompressWriter {
+    pub fn new() -> PcompressWriter {
         PcompressWriter {
             writer: BufWriter::new(stdout()),
             diff: Diff::new(),
@@ -245,7 +244,7 @@ impl StatsWriter for PcompressWriter {
         for (node, &dist) in partition.assignments.iter().enumerate() {
             self.diff.add(dist as usize, node);
         }
-        export_diff(&mut self.writer, &self.diff); 
+        export_diff(&mut self.writer, &self.diff);
         Ok(())
     }
 

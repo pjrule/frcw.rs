@@ -10,11 +10,13 @@ use super::{
 use crate::buffers::{SpanningTreeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
 use crate::partition::Partition;
-use crate::spanning_tree::{RMSTSampler, SpanningTreeSampler};
+use crate::spanning_tree::{RMSTSampler, RegionAwareSampler, SpanningTreeSampler};
 use crossbeam::scope;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use serde_json::json;
+use std::collections::HashMap;
 use std::marker::Send;
 pub type ScoreValue = f64;
 
@@ -67,15 +69,23 @@ fn start_opt_thread(
     // properties, so it would make little sense to support reversible
     // ReCom or the like. RMST sampling is asymptotically more efficient
     // than UST sampling, so we use it as the default for now.
-    assert!(params.variant == RecomVariant::DistrictPairsRMST);
-
     let n = graph.pops.len();
     let mut rng: SmallRng = SeedableRng::seed_from_u64(rng_seed);
     let mut subgraph_buf = SubgraphBuffer::new(n, buf_size);
     let mut st_buf = SpanningTreeBuffer::new(buf_size);
     let mut split_buf = SplitBuffer::new(buf_size, params.balance_ub as usize);
     let mut proposal_buf = RecomProposal::new_buffer(buf_size);
-    let mut st_sampler = RMSTSampler::new(buf_size);
+    let mut st_sampler: Box<dyn SpanningTreeSampler>;
+    if params.variant == RecomVariant::DistrictPairsRegionAware {
+        st_sampler = Box::new(RegionAwareSampler::new(
+            buf_size,
+            params.region_weights.clone().unwrap(),
+        ));
+    } else if params.variant == RecomVariant::DistrictPairsRMST {
+        st_sampler = Box::new(RMSTSampler::new(buf_size));
+    } else {
+        panic!("ReCom variant not supported by optimizer.");
+    }
 
     let mut next: OptJobPacket = job_recv.recv().unwrap();
     while !next.terminate {
@@ -228,7 +238,11 @@ pub fn multi_short_bursts(
             }
             step += (n_threads * burst_length) as u64;
             if diff.is_some() && verbose {
-                println!("{}\t{}", step, score);
+                println!("{}", json!({
+                    "step": step,
+                    "score": score,
+                    "assignment": partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
+                }).to_string());
             }
             for job in job_sends.iter() {
                 next_batch(job, diff.clone(), burst_length);

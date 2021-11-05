@@ -4,6 +4,7 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{value_t, App, Arg};
+use frcw::config::parse_region_weights_config;
 use frcw::graph::Graph;
 use frcw::init::from_networkx;
 use frcw::partition::Partition;
@@ -146,6 +147,12 @@ fn main() {
                 .takes_value(true)
                 .required(true)
                 .help("A JSON-formatted objective function configuration>"),
+        )
+        .arg(
+            Arg::with_name("region_weights")
+                .long("region-weights")
+                .takes_value(true)
+                .help("Region columns with weights for region-aware ReCom."),
         );
     let matches = cli.get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
@@ -168,6 +175,8 @@ fn main() {
         .collect();
     let objective_config = matches.value_of("objective").unwrap();
     let objective_fn = make_objective_fn(objective_config);
+    let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
+    let region_weights = parse_region_weights_config(region_weights_raw);
 
     assert!(tol >= 0.0 && tol <= 1.0);
 
@@ -179,15 +188,18 @@ fn main() {
         num_steps: n_steps,
         rng_seed: rng_seed,
         balance_ub: 0,
-        variant: RecomVariant::DistrictPairsRMST,
-        region_weights: None,
+        variant: match region_weights {
+            None => RecomVariant::DistrictPairsRMST,
+            Some(_) => RecomVariant::DistrictPairsRegionAware,
+        },
+        region_weights: region_weights.clone(),
     };
 
     let mut graph_file = fs::File::open(&graph_json).unwrap();
     let mut graph_hasher = Sha3_256::new();
     io::copy(&mut graph_file, &mut graph_hasher).unwrap();
     let graph_hash = format!("{:x}", graph_hasher.finalize());
-    let meta = json!({
+    let mut meta = json!({
         "assignment_col": assignment_col,
         "tol": tol,
         "pop_col": pop_col,
@@ -201,8 +213,13 @@ fn main() {
         "burst_length": burst_length,
         "graph_json": graph_json,
     });
+    if region_weights.is_some() {
+        meta.as_object_mut()
+            .unwrap()
+            .insert("region_weights".to_string(), json!(region_weights));
+    }
     println!("{}", json!({ "meta": meta }).to_string());
-    let partition = multi_short_bursts(
+    multi_short_bursts(
         &graph,
         partition,
         &params,
@@ -211,5 +228,4 @@ fn main() {
         burst_length,
         true,
     );
-    println!("{:?}", partition.assignments);
 }
