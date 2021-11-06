@@ -14,7 +14,7 @@ use crate::spanning_tree::{RMSTSampler, RegionAwareSampler, SpanningTreeSampler}
 use crossbeam::scope;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use serde_json::json;
 use std::collections::HashMap;
 use std::marker::Send;
@@ -59,6 +59,7 @@ fn start_opt_thread(
     mut partition: Partition,
     params: RecomParams,
     obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+    accept_fn: Option<impl Fn(&Graph, &Partition) -> f64 + Send + Clone + Copy>,
     rng_seed: u64,
     buf_size: usize,
     job_recv: Receiver<OptJobPacket>,
@@ -118,13 +119,24 @@ fn start_opt_thread(
                 &params,
             );
             if split.is_ok() {
-                score = obj_fn(&graph, &partition);
-                partition.update(&proposal_buf);
-                if score >= best_score {
-                    // TODO: reduce allocations by keeping a separate
-                    // buffer for the best partition.
-                    best_partition = Some(partition.clone());
-                    best_score = score;
+                let accepted = match accept_fn {
+                    None => true,
+                    Some(acc_fn) => {
+                        // TODO: use a buffer here.
+                        let mut proposed_partition = partition.clone();
+                        proposed_partition.update(&proposal_buf);
+                        acc_fn(&graph, &proposed_partition) <= rng.gen::<f64>()
+                    }
+                };
+                if accepted {
+                    score = obj_fn(&graph, &partition);
+                    partition.update(&proposal_buf);
+                    if score >= best_score {
+                        // TODO: reduce allocations by keeping a separate
+                        // buffer for the best partition.
+                        best_partition = Some(partition.clone());
+                        best_score = score;
+                    }
                 }
                 step += 1;
             }
@@ -180,6 +192,7 @@ pub fn multi_short_bursts(
     params: &RecomParams,
     n_threads: usize,
     obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+    accept_fn: Option<impl Fn(&Graph, &Partition) -> f64 + Send + Clone + Copy>,
     burst_length: usize,
     verbose: bool,
 ) -> Partition {
@@ -212,6 +225,7 @@ pub fn multi_short_bursts(
                     partition,
                     params.clone(),
                     obj_fn,
+                    accept_fn,
                     rng_seed,
                     node_ub,
                     job_recv,

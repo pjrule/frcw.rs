@@ -153,6 +153,11 @@ fn main() {
                 .long("region-weights")
                 .takes_value(true)
                 .help("Region columns with weights for region-aware ReCom."),
+        )
+        .arg(
+            Arg::with_name("accept_fn")
+                .long("accept-fn")
+                .takes_value(true)
         );
     let matches = cli.get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
@@ -177,6 +182,12 @@ fn main() {
     let objective_fn = make_objective_fn(objective_config);
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
+    let accept_fn_name = matches.value_of("region_weights").unwrap_or_default();
+    let accept_fn = match accept_fn_name {
+        "" => None,
+        "dallas" => Some(dallas_accept_fn),
+        _ => panic!("Unknown acceptance function '{}'.", accept_fn_name)
+    };
 
     assert!(tol >= 0.0 && tol <= 1.0);
 

@@ -286,7 +286,7 @@ mod rmst {
             for (region_col, region_weight) in self.region_weights.iter() {
                 for (idx, edge) in graph.edges.iter().enumerate() {
                     if graph.attr[region_col][edge.0] != graph.attr[region_col][edge.1] {
-                        self.weights[idx] -= region_weight;
+                        self.weights[idx] += region_weight;
                     }
                 }
             }
@@ -296,7 +296,7 @@ mod rmst {
                 self.weights_with_indices.push((idx, weight));
             }
             self.weights_with_indices
-                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().reverse());
+                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
             self.edges_by_weight.clear();
             for (edge_idx, _) in self.weights_with_indices.iter() {
