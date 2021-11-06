@@ -18,7 +18,7 @@ pub fn mod_hill_climbing(
         1.0
     }
     else {
-        let prob = (c * (proposed_score - proposed_score)).exp();
+        let prob = (c * (proposed_score - parent_score)).exp();
         prob.min(1.0)
     }
 }

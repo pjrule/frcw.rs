@@ -481,7 +481,7 @@ pub fn multi_chain_opt(
                 .unwrap();
             }
         }
-        let mut sampled = SelfLoopCounts::default();
+        // let mut sampled = SelfLoopCounts::default();
         while step <= params.num_steps {
             let mut counts = SelfLoopCounts::default();
             let mut proposals = Vec::<RecomProposal>::new();
@@ -499,9 +499,10 @@ pub fn multi_chain_opt(
                     let event = rng.gen_range(0..total);
                     if event < loops {
                         // Case: no accepted proposal (don't need to update worker thread state).
-                        sampled.inc(counts.index_and_dec(event).unwrap());
+                        // sampled.inc(counts.index_and_dec(event).unwrap());
                         loops -= 1;
-                    } else {
+                    }
+                    else {
                         // Case: accepted proposal (update worker thread state).
                         let proposal = &proposals[rng.gen_range(0..proposals.len())];
                         let mut proposed_partition = partition.clone();
@@ -512,10 +513,15 @@ pub fn multi_chain_opt(
                                 rng.gen::<f64>() <= acc_fn(&graph, &proposed_partition, &partition)  
                             }
                         };
-                        if accepted {
+                        if accepted == false {
+                            // sampled.inc(counts.index_and_dec(event).unwrap());
+                            loops -= 1;
+                        }
+                        else {
                             score = obj_fn(&graph, &partition);
                             proposed_partition.update(&proposal);
                             if score > best_score {
+                                println!("{}\t{}", best_score.to_string(), score.to_string());
                                 if verbose {
                                     println!("{}", json!({
                                         "step": step,
@@ -525,34 +531,22 @@ pub fn multi_chain_opt(
                                 }
                                 // TODO: reduce allocations by keeping a separate
                                 // buffer for the best partition.
-                                best_partition = Some(proposed_partition.clone());
+                                // best_partition = Some(proposed_partition.clone());
                                 best_score = score;
                             }
                             for job in job_sends.iter() {
                                 next_batch(job, Some(proposal.clone()), batch_size);
                             }
-                            // stats_send
-                            //     .send(StepPacket {
-                            //         step: step,
-                            //         proposal: Some(proposal.clone()),
-                            //         counts: sampled,
-                            //         terminate: false,
-                            //     })
-                            //     .unwrap();
+
                             // Reset sampled rejection stats until the next accepted step.
-                            sampled = SelfLoopCounts::default();
+                            // sampled = SelfLoopCounts::default();
                             break;
                         }
-                        else {
-                            sampled.inc(counts.index_and_dec(event).unwrap());
-                            loops -= 1;
-                        }
-
                     }
                     total -= 1;
                 }
             } else {
-                sampled = sampled + counts;
+                // sampled = sampled + counts;
                 step += loops as u64;
                 for job in job_sends.iter() {
                     next_batch(job, None, batch_size);
