@@ -1,8 +1,8 @@
 use crate::graph::Graph;
 use crate::partition::Partition;
-use crate::recom::opt::ScoreValue;
 use crate::stats::partition_attr_sums;
 use serde_json::Value;
+pub type ScoreValue = f64;
 
 pub fn make_objective_fn(
     objective_config: &str,

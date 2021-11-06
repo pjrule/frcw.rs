@@ -16,10 +16,13 @@ use crate::graph::Graph;
 use crate::partition::Partition;
 use crate::spanning_tree::{RMSTSampler, RegionAwareSampler, SpanningTreeSampler, USTSampler};
 use crate::stats::{SelfLoopCounts, SelfLoopReason, StatsWriter};
+use crate::gingleator::ScoreValue;
 use crossbeam::scope;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use serde_json::json;
+use std::collections::HashMap;
 
 /// Determines how many proposals the stats thread can lag behind by
 /// (compared to the head of the chain).
@@ -395,4 +398,173 @@ pub fn multi_chain(
     })
     .unwrap();
     stop_stats_thread(&stats_send);
+}
+
+/// Runs a multi-threaded ReCom chain.
+///
+/// # Arguments
+///
+/// * `graph` - The graph associated with `partition`.
+/// * `partition` - The partition to start the chain run from (updated in place).
+/// * `writer` - The statistics writer.
+/// * `params` - The parameters of the ReCom chain run.
+/// * `n_threads` - The number of worker threads (excluding the main thread).
+/// * `batch_size` - The number of steps per unit of multithreaded work. This
+///   parameter should be tuned according to the chain's average acceptance
+///   probability: chains that reject most proposals (e.g. reversible ReCom
+///   on large graphs) will benefit from large batches, but chains that accept
+///   most or all proposals should use small batches.
+pub fn multi_chain_opt(
+    graph: &Graph,
+    partition: &Partition,
+    _writer: Box<dyn StatsWriter>,
+    params: &RecomParams,
+    n_threads: usize,
+    batch_size: usize,
+    obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+    accept_fn: Option<impl Fn(&Graph, &Partition, &Partition) -> f64 + Send + Clone + Copy>,
+    verbose: bool,
+) {
+    let mut step = 0;
+    let node_ub = node_bound(&graph.pops, params.max_pop);
+    let mut job_sends = vec![]; // main thread sends work to job threads
+    let mut job_recvs = vec![]; // job threads receive work from main thread
+    for _ in 0..n_threads {
+        let (s, r): (Sender<JobPacket>, Receiver<JobPacket>) = unbounded();
+        job_sends.push(s);
+        job_recvs.push(r);
+    }
+    let mut best_partition: Option<Partition> = None;
+    let mut score = obj_fn(&graph, &partition);
+    let mut best_score: ScoreValue = score;
+    // All job threads send a summary of chain results back to the main thread.
+    let (result_send, result_recv): (Sender<ResultPacket>, Receiver<ResultPacket>) = unbounded();
+    // The stats thread receives accepted proposals from the main thread.
+    // let (stats_send, stats_recv): (Sender<StepPacket>, Receiver<StepPacket>) =
+    //     bounded(STATS_CHANNEL_CAPACITY);
+    let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
+
+    // Start job and stats threads.
+    scope(|scope| {
+        // Start stats thread.
+        // scope.spawn(move |_| {
+        //     start_stats_thread(graph.clone(), partition.clone(), writer, stats_recv);
+        // });
+
+        // Start job threads.
+        for t_idx in 0..n_threads {
+            // TODO: is this (+ t_idx) a sensible way to seed?
+            let rng_seed = params.rng_seed + t_idx as u64 + 1;
+            let job_recv = job_recvs[t_idx].clone();
+            let result_send = result_send.clone();
+
+            scope.spawn(move |_| {
+                start_job_thread(
+                    graph.clone(),
+                    partition.clone(),
+                    params.clone(),
+                    rng_seed,
+                    node_ub,
+                    job_recv,
+                    result_send,
+                );
+            });
+        }
+
+        if params.num_steps > 0 {
+            for job in job_sends.iter() {
+                job.send(JobPacket {
+                    n_steps: batch_size,
+                    diff: None,
+                    terminate: false,
+                })
+                .unwrap();
+            }
+        }
+        let mut sampled = SelfLoopCounts::default();
+        while step <= params.num_steps {
+            let mut counts = SelfLoopCounts::default();
+            let mut proposals = Vec::<RecomProposal>::new();
+            for _ in 0..n_threads {
+                let packet: ResultPacket = result_recv.recv().unwrap();
+                counts = counts + packet.counts;
+                proposals.extend(packet.proposals);
+            }
+            let mut loops = counts.sum();
+            if proposals.len() > 0 {
+                // Sample events without replacement.
+                let mut total = loops + proposals.len();
+                while total > 0 {
+                    step += 1;
+                    let event = rng.gen_range(0..total);
+                    if event < loops {
+                        // Case: no accepted proposal (don't need to update worker thread state).
+                        sampled.inc(counts.index_and_dec(event).unwrap());
+                        loops -= 1;
+                    } else {
+                        // Case: accepted proposal (update worker thread state).
+                        let proposal = &proposals[rng.gen_range(0..proposals.len())];
+                        let mut proposed_partition = partition.clone();
+                        proposed_partition.update(&proposal);
+                        let accepted = match accept_fn {
+                            None => true,
+                            Some(acc_fn) => {
+                                rng.gen::<f64>() <= acc_fn(&graph, &proposed_partition, &partition)  
+                            }
+                        };
+                        if accepted {
+                            score = obj_fn(&graph, &partition);
+                            proposed_partition.update(&proposal);
+                            if score > best_score {
+                                if verbose {
+                                    println!("{}", json!({
+                                        "step": step,
+                                        "score": score,
+                                        "assignment": partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
+                                    }).to_string());
+                                }
+                                // TODO: reduce allocations by keeping a separate
+                                // buffer for the best partition.
+                                best_partition = Some(proposed_partition.clone());
+                                best_score = score;
+                            }
+                            for job in job_sends.iter() {
+                                next_batch(job, Some(proposal.clone()), batch_size);
+                            }
+                            // stats_send
+                            //     .send(StepPacket {
+                            //         step: step,
+                            //         proposal: Some(proposal.clone()),
+                            //         counts: sampled,
+                            //         terminate: false,
+                            //     })
+                            //     .unwrap();
+                            // Reset sampled rejection stats until the next accepted step.
+                            sampled = SelfLoopCounts::default();
+                            break;
+                        }
+                        else {
+                            sampled.inc(counts.index_and_dec(event).unwrap());
+                            loops -= 1;
+                        }
+
+                    }
+                    total -= 1;
+                }
+            } else {
+                sampled = sampled + counts;
+                step += loops as u64;
+                for job in job_sends.iter() {
+                    next_batch(job, None, batch_size);
+                }
+            }
+        }
+
+        // Terminate worker threads.
+        for job in job_sends.iter() {
+            stop_job_thread(job);
+        }
+    })
+    .unwrap();
+    // stop_stats_thread(&stats_send);
 }

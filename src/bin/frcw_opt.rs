@@ -1,30 +1,26 @@
-//! Short bursts optimization CLI for frcw.
+//! Main CLI for frcw.
 use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{value_t, App, Arg};
 use frcw::config::parse_region_weights_config;
-// use frcw::graph::Graph;
 use frcw::init::from_networkx;
-// use frcw::partition::Partition;
-use frcw::recom::opt::multi_short_bursts;
+use frcw::recom::run::multi_chain_opt;
 use frcw::recom::{RecomParams, RecomVariant};
-// use frcw::stats::partition_attr_sums;
-use frcw::acceptance::dallas_birmingham_together;
+use frcw::stats::{JSONLWriter, PcompressWriter, StatsWriter, TSVWriter};
+use frcw::acceptance::mod_hill_climbing_accept_fn;
 use frcw::gingleator::make_objective_fn;
 use serde_json::json;
-// use serde_json::Value;
 use sha3::{Digest, Sha3_256};
-// use std::marker::Send;
 use std::path::PathBuf;
 use std::{fs, io};
 
 fn main() {
-    let cli = App::new("frcw_short_bursts")
+    let mut cli = App::new("frcw")
         .version("0.1.0")
-        .author("Parker J. Rule <parker.rule@tufts.edu>")
-        .about("A short bursts optimizer for redistricting")
+        .author("JN Matthews <jnmatthews@mggg.org>")
+        .about("A minimal implementation of the ReCom Markov chain with optimization capabilities")
         .arg(
             Arg::with_name("graph_json")
                 .long("graph-json")
@@ -68,6 +64,14 @@ fn main() {
                 .help("The seed of the RNG used to draw proposals."),
         )
         .arg(
+            Arg::with_name("balance_ub")
+                .long("balance-ub")
+                .short("M") // Variable used in RevReCom paper
+                .takes_value(true)
+                .default_value("0") // TODO: just use unwrap_or_default() instead?
+                .help("The normalizing constant (reversible ReCom only)."),
+        )
+        .arg(
             Arg::with_name("n_threads")
                 .long("n-threads")
                 .takes_value(true)
@@ -75,17 +79,35 @@ fn main() {
                 .help("The number of threads to use."),
         )
         .arg(
-            Arg::with_name("burst_length")
-                .long("burst-length")
+            Arg::with_name("batch_size")
+                .long("batch-size")
                 .takes_value(true)
                 .required(true)
-                .help("The number of accepted steps per short burst."),
+                .help("The number of proposals per batch job."),
         )
+        .arg(
+            Arg::with_name("variant")
+                .long("variant")
+                .takes_value(true)
+                .default_value("reversible"),
+        ) // other options: cut_edges, district_pairs
+        .arg(
+            Arg::with_name("writer")
+                .long("writer")
+                .takes_value(true)
+                .default_value("jsonl"),
+        ) // other options: jsonl-full, tsv
         .arg(
             Arg::with_name("sum_cols")
                 .long("sum-cols")
                 .multiple(true)
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("region_weights")
+                .long("region-weights")
+                .takes_value(true)
+                .help("Region columns with weights for region-aware ReCom."),
         )
         .arg(
             Arg::with_name("objective")
@@ -95,23 +117,20 @@ fn main() {
                 .help("A JSON-formatted objective function configuration>"),
         )
         .arg(
-            Arg::with_name("region_weights")
-                .long("region-weights")
-                .takes_value(true)
-                .help("Region columns with weights for region-aware ReCom."),
-        )
-        .arg(
             Arg::with_name("accept_fn")
                 .long("accept-fn")
                 .takes_value(true)
         );
+    if cfg!(feature = "linalg") {
+        cli = cli.arg(Arg::with_name("spanning_tree_counts").long("st-counts"));
+    }
     let matches = cli.get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
-    let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
     let rng_seed = value_t!(matches.value_of("rng_seed"), u64).unwrap_or_else(|e| e.exit());
     let tol = value_t!(matches.value_of("tol"), f64).unwrap_or_else(|e| e.exit());
-    let burst_length =
-        value_t!(matches.value_of("burst_length"), usize).unwrap_or_else(|e| e.exit());
+    let balance_ub = value_t!(matches.value_of("balance_ub"), u32).unwrap_or_else(|e| e.exit());
+    let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
+    let batch_size = value_t!(matches.value_of("batch_size"), usize).unwrap_or_else(|e| e.exit());
     let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap()))
         .unwrap()
         .into_os_string()
@@ -119,36 +138,58 @@ fn main() {
         .unwrap();
     let pop_col = matches.value_of("pop_col").unwrap();
     let assignment_col = matches.value_of("assignment_col").unwrap();
+    let variant_str = matches.value_of("variant").unwrap();
+    let writer_str = matches.value_of("writer").unwrap();
+    let st_counts = matches.is_present("spanning_tree_counts");
     let sum_cols = matches
         .values_of("sum_cols")
         .unwrap_or_default()
         .map(|c| c.to_string())
         .collect();
+    let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let objective_config = matches.value_of("objective").unwrap();
     let objective_fn = make_objective_fn(objective_config);
-    let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
-    let region_weights = parse_region_weights_config(region_weights_raw);
     let accept_fn_name = matches.value_of("accept_fn").unwrap_or_default();
     let accept_fn = match accept_fn_name {
         "" => None,
-        "dallas" => Some(dallas_birmingham_together),
+        "hill" => Some(mod_hill_climbing_accept_fn(objective_fn)),
         _ => panic!("Unknown acceptance function '{}'.", accept_fn_name)
     };
+
+    let variant = match variant_str {
+        "reversible" => RecomVariant::Reversible,
+        "cut-edges-ust" => RecomVariant::CutEdgesUST,
+        "cut-edges-rmst" => RecomVariant::CutEdgesRMST,
+        "cut-edges-region-aware" => RecomVariant::CutEdgesRegionAware,
+        "district-pairs-ust" => RecomVariant::DistrictPairsUST,
+        "district-pairs-rmst" => RecomVariant::DistrictPairsRMST,
+        "district-pairs-region-aware" => RecomVariant::DistrictPairsRegionAware,
+        bad => panic!("Parameter error: invalid variant '{}'", bad),
+    };
+    let writer: Box<dyn StatsWriter> = match writer_str {
+        "tsv" => Box::new(TSVWriter::new()),
+        "jsonl" => Box::new(JSONLWriter::new(false, st_counts)),
+        "pcompress" => Box::new(PcompressWriter::new()),
+        "jsonl-full" => Box::new(JSONLWriter::new(true, st_counts)),
+        bad => panic!("Parameter error: invalid writer '{}'", bad),
+    };
+    if variant == RecomVariant::Reversible && balance_ub == 0 {
+        panic!("For reversible ReCom, specify M > 0.");
+    }
 
     assert!(tol >= 0.0 && tol <= 1.0);
 
     let (graph, partition) = from_networkx(&graph_json, pop_col, assignment_col, sum_cols).unwrap();
     let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
+    let region_weights = parse_region_weights_config(region_weights_raw);
+
     let params = RecomParams {
         min_pop: ((1.0 - tol) * avg_pop as f64).floor() as u32,
         max_pop: ((1.0 + tol) * avg_pop as f64).ceil() as u32,
         num_steps: n_steps,
         rng_seed: rng_seed,
-        balance_ub: 0,
-        variant: match region_weights {
-            None => RecomVariant::DistrictPairsRMST,
-            Some(_) => RecomVariant::DistrictPairsRegionAware,
-        },
+        balance_ub: balance_ub,
+        variant: variant,
         region_weights: region_weights.clone(),
     };
 
@@ -162,28 +203,32 @@ fn main() {
         "pop_col": pop_col,
         "graph_path": graph_json,
         "graph_sha3": graph_hash,
+        "batch_size": batch_size,
         "rng_seed": rng_seed,
         "num_threads": n_threads,
         "num_steps": n_steps,
         "parallel": true,
-        "type": "short_bursts",
-        "burst_length": burst_length,
         "graph_json": graph_json,
+        "chain_variant": variant_str,
     });
+    if variant == RecomVariant::Reversible {
+        meta.as_object_mut()
+            .unwrap()
+            .insert("balance_ub".to_string(), json!(balance_ub));
+    }
     if region_weights.is_some() {
         meta.as_object_mut()
             .unwrap()
             .insert("region_weights".to_string(), json!(region_weights));
     }
     println!("{}", json!({ "meta": meta }).to_string());
-    multi_short_bursts(
-        &graph,
-        partition,
-        &params,
-        n_threads,
-        objective_fn,
-        accept_fn,
-        burst_length,
-        true,
-    );
+    multi_chain_opt(&graph,
+                    &partition,
+                    writer,
+                    &params,
+                    n_threads,
+                    batch_size,
+                    objective_fn,
+                    accept_fn,
+                    true);
 }

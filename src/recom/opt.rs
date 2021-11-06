@@ -11,6 +11,7 @@ use crate::buffers::{SpanningTreeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
 use crate::partition::Partition;
 use crate::spanning_tree::{RMSTSampler, RegionAwareSampler, SpanningTreeSampler};
+use crate::gingleator::ScoreValue;
 use crossbeam::scope;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
@@ -18,7 +19,6 @@ use rand::{Rng, SeedableRng};
 use serde_json::json;
 use std::collections::HashMap;
 use std::marker::Send;
-pub type ScoreValue = f64;
 
 /// A unit of multithreaded work.
 struct OptJobPacket {
@@ -59,7 +59,7 @@ fn start_opt_thread(
     mut partition: Partition,
     params: RecomParams,
     obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
-    accept_fn: Option<impl Fn(&Graph, &Partition) -> f64 + Send + Clone + Copy>,
+    accept_fn: Option<impl Fn(&Graph, &Partition, &Partition) -> f64 + Send + Clone + Copy>,
     rng_seed: u64,
     buf_size: usize,
     job_recv: Receiver<OptJobPacket>,
@@ -125,7 +125,7 @@ fn start_opt_thread(
                         // TODO: use a buffer here.
                         let mut proposed_partition = partition.clone();
                         proposed_partition.update(&proposal_buf);
-                        rng.gen::<f64>() <= acc_fn(&graph, &proposed_partition) 
+                        rng.gen::<f64>() <= acc_fn(&graph, &proposed_partition, &partition) 
                     }
                 };
                 if accepted {
@@ -192,7 +192,7 @@ pub fn multi_short_bursts(
     params: &RecomParams,
     n_threads: usize,
     obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
-    accept_fn: Option<impl Fn(&Graph, &Partition) -> f64 + Send + Clone + Copy>,
+    accept_fn: Option<impl Fn(&Graph, &Partition, &Partition) -> f64 + Send + Clone + Copy>,
     burst_length: usize,
     verbose: bool,
 ) -> Partition {
