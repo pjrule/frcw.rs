@@ -70,7 +70,7 @@ fn make_objective_fn(
             Some(&v) => v,
             None => 0.0,
         };
-        opportunity_count as f64 + (next_highest / threshold)
+        opportunity_count as f64 + next_highest
     }
 }
 
