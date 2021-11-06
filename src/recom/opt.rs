@@ -125,7 +125,7 @@ fn start_opt_thread(
                         // TODO: use a buffer here.
                         let mut proposed_partition = partition.clone();
                         proposed_partition.update(&proposal_buf);
-                        acc_fn(&graph, &proposed_partition) <= rng.gen::<f64>()
+                        rng.gen::<f64>() <= acc_fn(&graph, &proposed_partition) 
                     }
                 };
                 if accepted {
