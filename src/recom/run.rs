@@ -422,7 +422,7 @@ pub fn multi_chain_opt(
     n_threads: usize,
     batch_size: usize,
     obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
-    accept_fn: Option<impl Fn(&Graph, &Partition, &Partition) -> f64 + Send + Clone + Copy>,
+    accept_fn: Option<impl Fn(&Graph, &Partition, &Partition, u64) -> f64 + Send + Clone + Copy>,
     verbose: bool,
 ) {
     let mut step = 0;
@@ -434,7 +434,7 @@ pub fn multi_chain_opt(
         job_sends.push(s);
         job_recvs.push(r);
     }
-    let mut best_partition: Option<Partition> = None;
+    // let mut best_partition: Option<Partition> = None;
     let mut score = obj_fn(&graph, &partition);
     let mut best_score: ScoreValue = score;
     // All job threads send a summary of chain results back to the main thread.
@@ -504,13 +504,22 @@ pub fn multi_chain_opt(
                     }
                     else {
                         // Case: accepted proposal (update worker thread state).
-                        let proposal = &proposals[rng.gen_range(0..proposals.len())];
+                        // let proposal = &proposals[rng.gen_range(0..proposals.len())];
+                        let scorer = |p: &RecomProposal| {
+                            let mut proposed_partition = partition.clone();
+                            proposed_partition.update(p);
+                            obj_fn(&graph, &proposed_partition)
+                        };
+
+                        let scores = &proposals.iter().map(|p| scorer(p)).collect::<Vec<ScoreValue>>();
+                        let max_prop = scores.iter().enumerate().fold((0, 0.0), |max, (ind, &val)| if val > max.1 {(ind, val)} else {max});
+                        let proposal = &proposals[max_prop.0];
                         let mut proposed_partition = partition.clone();
                         proposed_partition.update(&proposal);
                         let accepted = match accept_fn {
                             None => true,
                             Some(acc_fn) => {
-                                rng.gen::<f64>() <= acc_fn(&graph, &proposed_partition, &partition)  
+                                rng.gen::<f64>() <= acc_fn(&graph, &proposed_partition, &partition, step)  
                             }
                         };
                         if accepted == false {
@@ -518,10 +527,10 @@ pub fn multi_chain_opt(
                             loops -= 1;
                         }
                         else {
-                            score = obj_fn(&graph, &partition);
-                            proposed_partition.update(&proposal);
+                            score = max_prop.1; //obj_fn(&graph, &partition);
+                            // proposed_partition.update(&proposal);
+                            // println!("{}\t{}\t{}", step.to_string(), best_score.to_string(), score.to_string());
                             if score > best_score {
-                                println!("{}\t{}", best_score.to_string(), score.to_string());
                                 if verbose {
                                     println!("{}", json!({
                                         "step": step,

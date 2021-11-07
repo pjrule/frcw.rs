@@ -10,15 +10,17 @@ pub fn mod_hill_climbing(
     graph: &Graph,
     proposed_partition: &Partition,
     parent_partition: &Partition,
+    step: u64
 ) -> AcceptanceProb {
-    let c = 20000.0;
+    let c = 1000.0;
     let proposed_score = obj_fn(&graph, &proposed_partition);
     let parent_score = obj_fn(&graph, &parent_partition);
-    if proposed_score >= parent_score {
+    if proposed_score > parent_score {
         1.0
     }
     else {
-        let prob = (c * (proposed_score - parent_score)).exp();
+        let prob = ((c * (step as f64 / 100000.0) ) * (proposed_score - parent_score)).exp();
+        // let prob = (c * (proposed_score - parent_score)).exp();
         prob.min(1.0)
     }
 }
@@ -42,8 +44,8 @@ pub fn dallas_birmingham_together(
 
 pub fn mod_hill_climbing_accept_fn(
     opt_fun: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
-) -> impl Fn(&Graph, &Partition, &Partition) -> AcceptanceProb + Send + Clone + Copy {
-    move |graph: &Graph, proposed_partition: &Partition, parent_partition: &Partition| -> AcceptanceProb {
-        mod_hill_climbing(opt_fun, &graph, &proposed_partition, &parent_partition)
+) -> impl Fn(&Graph, &Partition, &Partition, u64) -> AcceptanceProb + Send + Clone + Copy {
+    move |graph: &Graph, proposed_partition: &Partition, parent_partition: &Partition, step: u64| -> AcceptanceProb {
+        mod_hill_climbing(opt_fun, &graph, &proposed_partition, &parent_partition, step) * dallas_birmingham_together(&graph, &proposed_partition, &parent_partition)
     }
 }

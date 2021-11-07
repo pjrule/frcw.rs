@@ -42,7 +42,7 @@ pub fn make_objective_fn(
             .zip(total_pops.iter())
             .map(|(&m, &t)| m as f64 / t as f64)
             .collect();
-        let opportunity_count = shares.iter().filter(|&s| s >= &threshold).count();
+        let opportunity_count = shares.iter().filter(|&s| s > &threshold).count();
 
         // partial ordering on f64:
         // see https://www.reddit.com/r/rust/comments/29kia3/no_ord_for_f32/
