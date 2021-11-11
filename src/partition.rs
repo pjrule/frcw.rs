@@ -236,13 +236,13 @@ mod tests {
     fn from_assignments_rect_grid_2x2() {
         let grid = Graph::rect_grid(2, 2);
         let assignments = vec![1, 1, 1, 2];
-        let partition = Partition::from_assignments(&grid, &assignments).unwrap();
+        let mut partition = Partition::from_assignments(&grid, &assignments).unwrap();
         assert_eq!(partition.num_dists, 2);
         assert_eq!(partition.assignments, vec![0, 0, 0, 1]);
         assert_eq!(partition.dist_pops, vec![3, 1]);
         assert_eq!(partition.dist_nodes, vec![vec![0, 1, 2], vec![3]]);
-        assert_eq!(partition.dist_adj, vec![0, 2, 2, 0]);
-        assert_eq!(partition.cut_edges, vec![2, 3]);
+        assert_eq!(*partition.dist_adj(&grid), vec![0, 2, 2, 0]);
+        assert_eq!(*partition.cut_edges(&grid), vec![2, 3]);
     }
 
     #[test]
@@ -289,13 +289,13 @@ mod tests {
     fn from_assignment_str_rect_grid_2x2() {
         let grid = Graph::rect_grid(2, 2);
         let assignments = "1 1 1 2";
-        let partition = Partition::from_assignment_str(&grid, &assignments).unwrap();
+        let mut partition = Partition::from_assignment_str(&grid, &assignments).unwrap();
         assert_eq!(partition.num_dists, 2);
         assert_eq!(partition.assignments, vec![0, 0, 0, 1]);
         assert_eq!(partition.dist_pops, vec![3, 1]);
         assert_eq!(partition.dist_nodes, vec![vec![0, 1, 2], vec![3]]);
-        assert_eq!(partition.dist_adj(), vec![0, 2, 2, 0]);
-        assert_eq!(partition.cut_edges(), vec![2, 3]);
+        assert_eq!(*partition.dist_adj(&grid), vec![0, 2, 2, 0]);
+        assert_eq!(*partition.cut_edges(&grid), vec![2, 3]);
     }
 
     #[test]

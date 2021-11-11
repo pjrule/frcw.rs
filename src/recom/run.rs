@@ -21,7 +21,6 @@ use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-
 /// Determines how many proposals the stats thread can lag behind by
 /// (compared to the head of the chain).
 const STATS_CHANNEL_CAPACITY: usize = 16;

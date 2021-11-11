@@ -207,7 +207,7 @@ mod rmst {
         // Initialize a union-find data structure to keep track of connected
         // components of the graph.
         // TODO: buffer this?
-        let mut uf = UnionFind::<usize>::new(graph.edges.len());
+        let mut uf = UnionFind::<usize>::new(graph.neighbors.len());
 
         // Apply Kruskal's algorithm: add edges until the graph is connected.
         let n_edges = graph.pops.len() - 1;
