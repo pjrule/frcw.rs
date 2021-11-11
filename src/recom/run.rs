@@ -21,6 +21,7 @@ use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+
 /// Determines how many proposals the stats thread can lag behind by
 /// (compared to the head of the chain).
 const STATS_CHANNEL_CAPACITY: usize = 16;
@@ -392,7 +393,7 @@ pub fn multi_chain(
         for job in job_sends.iter() {
             stop_job_thread(job);
         }
+        stop_stats_thread(&stats_send);
     })
     .unwrap();
-    stop_stats_thread(&stats_send);
 }
