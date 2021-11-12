@@ -1,3 +1,4 @@
+// Functional tests that verify ReCom chain invariants at each step.
 use frcw::graph::Graph;
 use frcw::partition::Partition;
 use frcw::recom::run::multi_chain;
@@ -5,7 +6,6 @@ use frcw::recom::{RecomParams, RecomProposal, RecomVariant};
 use frcw::stats::{SelfLoopCounts, StatsWriter};
 use std::collections::HashSet;
 use std::io::Result as IOResult;
-/// Functional tests that verify ReCom chain invariants at each step.
 use std::iter::FromIterator;
 
 use rstest::rstest;
@@ -134,15 +134,19 @@ struct StepInvariantWriter {
     partition: Option<Partition>,
     /// The global step counter at the last step.
     last_step: u64,
+    /// Flag for checking if all districts have changed on close
+    /// (that is, no districts are frozen).
+    check_frozen: bool
 }
 
 impl StepInvariantWriter {
-    fn new(params: RecomParams) -> StepInvariantWriter {
+    fn new(params: RecomParams, check_frozen: bool) -> StepInvariantWriter {
         return StepInvariantWriter {
             params: params,
             initial_partition: None,
             partition: None,
             last_step: 0,
+            check_frozen: check_frozen
         };
     }
 }
@@ -158,6 +162,14 @@ impl StatsWriter for StepInvariantWriter {
             "Writer must be initialized exactly once."
         );
         assert!(
+            cut_edges_invariant(graph, &mut partition),
+            "Cut edges don't match node assignments in initial partition."
+        );
+        assert!(
+            dist_adj_invariant(graph, &mut partition),
+            "Initial partition has incorrect adjacency matrix."
+        );
+        assert!(
             partition_connected_invariant(graph, &partition),
             "Initial partition is disconnected."
         );
@@ -170,16 +182,8 @@ impl StatsWriter for StepInvariantWriter {
             "District population sums incorrect in initial partition."
         );
         assert!(
-            cut_edges_invariant(graph, &mut partition),
-            "Cut edges don't match node assignments in initial partition."
-        );
-        assert!(
             assignments_invariant(graph, &partition),
             ".assignments does not match .dist_nodes in initial partition"
-        );
-        assert!(
-            dist_adj_invariant(graph, &mut partition),
-            "Initial partition has incorrect adjacency matrix."
         );
         assert!(
             graph_partition_invariant(graph, &partition),
@@ -207,6 +211,14 @@ impl StatsWriter for StepInvariantWriter {
 
         // TODO: check that districts in proposal are adjacent.
         assert!(
+            cut_edges_invariant(graph, &mut partition),
+            "Cut edges don't match node assignment after proposal."
+        );
+        assert!(
+            dist_adj_invariant(graph, &mut partition),
+            "District adjacency matrix is incorrect after step."
+        );
+        assert!(
             proposal_connected_invariant(graph, proposal),
             "At least one of the proposed districts is disconnected."
         );
@@ -217,14 +229,6 @@ impl StatsWriter for StepInvariantWriter {
         assert!(
             population_sum_invariant(graph, &partition),
             "District population sums incorrect after proposal."
-        );
-        assert!(
-            cut_edges_invariant(graph, &mut partition),
-            "Cut edges don't match node assignment after proposal."
-        );
-        assert!(
-            dist_adj_invariant(graph, &mut partition),
-            "District adjacency matrix is incorrect after step."
         );
         assert!(
             graph_partition_invariant(graph, &partition),
@@ -247,22 +251,24 @@ impl StatsWriter for StepInvariantWriter {
     /// This assumes a large number of steps on a large graph, such that the
     /// probability of any district remaining the same is negligible.
     fn close(&mut self) -> IOResult<()> {
-        // Check that every district changed (relabeling counts as a change).
-        let initial_partition = match self.initial_partition.as_ref() {
-            Some(p) => p,
-            None => panic!("Writer must be initialized before closing."),
-        };
-        let last_partition = match self.partition.as_ref() {
-            Some(p) => p,
-            None => panic!("Writer must be initialized before closing."),
-        };
-        // TODO: we assume nodes are _literally_ frozen (no permutation)--should we loosen?
-        let all_districts_diff = initial_partition
-            .dist_nodes
-            .iter()
-            .zip(last_partition.dist_nodes.iter())
-            .all(|(init_nodes, last_nodes)| init_nodes != last_nodes);
-        assert!(all_districts_diff, "At least one district frozen!");
+        if self.check_frozen {
+            // Check that every district changed (relabeling counts as a change).
+            let initial_partition = match self.initial_partition.as_ref() {
+                Some(p) => p,
+                None => panic!("Writer must be initialized before closing."),
+            };
+            let last_partition = match self.partition.as_ref() {
+                Some(p) => p,
+                None => panic!("Writer must be initialized before closing."),
+            };
+            // TODO: we assume nodes are _literally_ frozen (no permutation)--should we loosen?
+            let all_districts_diff = initial_partition
+                .dist_nodes
+                .iter()
+                .zip(last_partition.dist_nodes.iter())
+                .all(|(init_nodes, last_nodes)| init_nodes != last_nodes);
+            assert!(all_districts_diff, "At least one district frozen!");
+        }
 
         // Enforce closing (sorta).
         self.partition = None;
@@ -292,7 +298,7 @@ fn test_chain_invariants_recom_grid(
         variant: variant,
         region_weights: None,
     };
-    let writer = Box::new(StepInvariantWriter::new(params.clone())) as Box<dyn StatsWriter>;
+    let writer = Box::new(StepInvariantWriter::new(params.clone(), true)) as Box<dyn StatsWriter>;
     multi_chain(&graph, &partition, writer, &params, n_threads, batch_size);
 }
 
@@ -313,7 +319,7 @@ fn test_chain_invariants_revrecom_grid(
         variant: RecomVariant::Reversible,
         region_weights: None,
     };
-    let writer = Box::new(StepInvariantWriter::new(params.clone())) as Box<dyn StatsWriter>;
+    let writer = Box::new(StepInvariantWriter::new(params.clone(), true)) as Box<dyn StatsWriter>;
     multi_chain(&graph, &partition, writer, &params, n_threads, batch_size);
 }
 
@@ -335,7 +341,7 @@ fn test_chain_invariants_recom_iowa(
         variant: variant,
         region_weights: None,
     };
-    let writer = Box::new(StepInvariantWriter::new(params.clone())) as Box<dyn StatsWriter>;
+    let writer = Box::new(StepInvariantWriter::new(params.clone(), true)) as Box<dyn StatsWriter>;
     multi_chain(&graph, &partition, writer, &params, n_threads, batch_size);
 }
 
@@ -358,33 +364,29 @@ fn test_chain_invariants_revrecom_iowa(
         variant: RecomVariant::Reversible,
         region_weights: None,
     };
-    let writer = Box::new(StepInvariantWriter::new(params.clone())) as Box<dyn StatsWriter>;
+    let writer = Box::new(StepInvariantWriter::new(params.clone(), true)) as Box<dyn StatsWriter>;
     multi_chain(&graph, &partition, writer, &params, n_threads, batch_size);
 }
 
-/*
-#[ignore]
 #[rstest]
 fn test_chain_invariants_revrecom_large_states(
     #[values("PA", "VA")] state: &str,
-    #[values(1000)] num_steps: u64,
-    #[values((0.01, 30), (0.05, 60))] pop_tol_balance_ub: (f64, u32),
+    #[values(25000)] num_steps: u64,
     #[values(1, 4)] n_threads: usize,
     #[values(1, 4)] batch_size: usize,
 ) {
     let (graph, partition) = default_fixture(state);
     let avg_pop = (graph.total_pop as f64) / (partition.num_dists as f64);
-    let pop_tol = pop_tol_balance_ub.0;
-    let balance_ub = pop_tol_balance_ub.1;
+    let pop_tol = 0.05;
     let params = RecomParams {
         min_pop: ((1.0 - pop_tol) * avg_pop as f64).floor() as u32,
         max_pop: ((1.0 + pop_tol) * avg_pop as f64).ceil() as u32,
         num_steps: num_steps,
         rng_seed: RNG_SEED,
-        balance_ub: 0,
-        variant: variant,
+        balance_ub: 30,
+        variant: RecomVariant::Reversible,
+        region_weights: None
     };
-    let writer = Box::new(StepInvariantWriter::new(params.clone())) as Box<dyn StatsWriter>;
-    multi_chain(&graph, &partition, writer, params, n_threads, batch_size);
+    let writer = Box::new(StepInvariantWriter::new(params.clone(), false)) as Box<dyn StatsWriter>;
+    multi_chain(&graph, &partition, writer, &params, n_threads, batch_size);
 }
-*/
