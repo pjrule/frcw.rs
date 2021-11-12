@@ -369,6 +369,7 @@ fn test_chain_invariants_revrecom_iowa(
 }
 
 #[rstest]
+#[ignore]
 fn test_chain_invariants_revrecom_large_states(
     #[values("PA", "VA")] state: &str,
     #[values(25000)] num_steps: u64,
