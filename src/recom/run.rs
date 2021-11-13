@@ -213,7 +213,6 @@ fn start_job_thread(
                 Ok(n_splits) => {
                     if reversible {
                         // Step 4: accept any particular edge with probability 1 / (M * seam length)
-                        println!("splits:{}", n_splits);
                         let seam_length = proposal_buf.seam_length(&graph);
                         let prob =
                             (n_splits as f64) / (seam_length as f64 * params.balance_ub as f64);

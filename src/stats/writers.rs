@@ -6,7 +6,7 @@ use crate::stats::subgraph_spanning_tree_count;
 use crate::stats::{partition_sums, proposal_sums, SelfLoopCounts, SelfLoopReason};
 use pcompress::diff::Diff;
 use pcompress::encode::export_diff;
-use serde_json::{json, Value};
+use serde_json::{json, to_value, Value};
 use std::io::{stdout, BufWriter, Result, Stdout, Write};
 
 /// A standard interface for writing steps and statistics to stdout.
@@ -66,6 +66,8 @@ pub struct JSONLWriter {
     nodes: bool,
     /// Determines whether to compute spanning tree counts for each step.
     spanning_tree_counts: bool,
+    /// Determines whether to compute cut edge counts for each step.
+    cut_edges_count: bool,
 }
 
 impl TSVWriter {
@@ -81,10 +83,11 @@ impl AssignmentsOnlyWriter {
 }
 
 impl JSONLWriter {
-    pub fn new(nodes: bool, spanning_tree_counts: bool) -> JSONLWriter {
+    pub fn new(nodes: bool, spanning_tree_counts: bool, cut_edges_count: bool) -> JSONLWriter {
         JSONLWriter {
             nodes: nodes,
             spanning_tree_counts: spanning_tree_counts,
+            cut_edges_count: cut_edges_count,
         }
     }
 
@@ -170,6 +173,14 @@ impl StatsWriter for JSONLWriter {
         if self.spanning_tree_counts {
             JSONLWriter::init_spanning_tree_counts(graph, partition, &mut stats);
         }
+        if self.cut_edges_count {
+            let mut partition = partition.clone();
+            let cut_edges_count = partition.cut_edges(graph).len();
+            stats.as_object_mut().unwrap().insert(
+                "num_cut_edges".to_string(),
+                to_value(cut_edges_count).unwrap(),
+            );
+        }
         println!("{}", json!({ "init": stats }).to_string());
         Ok(())
     }
@@ -178,7 +189,7 @@ impl StatsWriter for JSONLWriter {
         &mut self,
         step: u64,
         graph: &Graph,
-        _partition: &Partition,
+        partition: &Partition,
         proposal: &RecomProposal,
         counts: &SelfLoopCounts,
     ) -> Result<()> {
@@ -197,6 +208,14 @@ impl StatsWriter for JSONLWriter {
         }
         if self.spanning_tree_counts {
             JSONLWriter::step_spanning_tree_counts(graph, proposal, &mut step);
+        }
+        if self.cut_edges_count {
+            let mut partition = partition.clone();
+            let cut_edges_count = partition.cut_edges(graph).len();
+            step.as_object_mut().unwrap().insert(
+                "num_cut_edges".to_string(),
+                to_value(cut_edges_count).unwrap(),
+            );
         }
         println!("{}", json!({ "step": step }).to_string());
         Ok(())

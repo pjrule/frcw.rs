@@ -136,7 +136,7 @@ struct StepInvariantWriter {
     last_step: u64,
     /// Flag for checking if all districts have changed on close
     /// (that is, no districts are frozen).
-    check_frozen: bool
+    check_frozen: bool,
 }
 
 impl StepInvariantWriter {
@@ -146,7 +146,7 @@ impl StepInvariantWriter {
             initial_partition: None,
             partition: None,
             last_step: 0,
-            check_frozen: check_frozen
+            check_frozen: check_frozen,
         };
     }
 }
@@ -386,7 +386,7 @@ fn test_chain_invariants_revrecom_large_states(
         rng_seed: RNG_SEED,
         balance_ub: 30,
         variant: RecomVariant::Reversible,
-        region_weights: None
+        region_weights: None,
     };
     let writer = Box::new(StepInvariantWriter::new(params.clone(), false)) as Box<dyn StatsWriter>;
     multi_chain(&graph, &partition, writer, &params, n_threads, batch_size);

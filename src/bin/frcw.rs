@@ -106,7 +106,8 @@ fn main() {
                 .long("region-weights")
                 .takes_value(true)
                 .help("Region columns with weights for region-aware ReCom."),
-        );
+        )
+        .arg(Arg::with_name("cut_edges_count").long("cut-edges-count"));
     if cfg!(feature = "linalg") {
         cli = cli.arg(Arg::with_name("spanning_tree_counts").long("st-counts"));
     }
@@ -127,6 +128,7 @@ fn main() {
     let variant_str = matches.value_of("variant").unwrap();
     let writer_str = matches.value_of("writer").unwrap();
     let st_counts = matches.is_present("spanning_tree_counts");
+    let cut_edges_count = matches.is_present("cut_edges_count");
     let sum_cols = matches
         .values_of("sum_cols")
         .unwrap_or_default()
@@ -146,9 +148,9 @@ fn main() {
     };
     let writer: Box<dyn StatsWriter> = match writer_str {
         "tsv" => Box::new(TSVWriter::new()),
-        "jsonl" => Box::new(JSONLWriter::new(false, st_counts)),
+        "jsonl" => Box::new(JSONLWriter::new(false, st_counts, cut_edges_count)),
         "pcompress" => Box::new(PcompressWriter::new()),
-        "jsonl-full" => Box::new(JSONLWriter::new(true, st_counts)),
+        "jsonl-full" => Box::new(JSONLWriter::new(true, st_counts, cut_edges_count)),
         bad => panic!("Parameter error: invalid writer '{}'", bad),
     };
     if variant == RecomVariant::Reversible && balance_ub == 0 {
