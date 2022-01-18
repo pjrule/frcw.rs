@@ -7,7 +7,7 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub struct Edge(pub usize, pub usize);
 
-#[derive(Debug, Snafu)]
+#[derive(Debug, PartialEq, Snafu)]
 pub enum GraphError {
     #[snafu(display("Empty edge list"))]
     ErrEmptyEdgeList,
@@ -29,7 +29,7 @@ pub enum GraphError {
 }
 
 /// A lightweight graph with population metadata.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Graph {
     /// The graph's edges, represented as pairs of node indices,
     /// sorted by the first element of the pair.
@@ -356,44 +356,57 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Duplicate edge: 1 2")]
     fn from_edge_list_duplicate_edge() {
-        Graph::from_edge_list("1 2\n1 2", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\n1 2", "1 2").unwrap_err(),
+            GraphError::ErrDuplicateEdge {e0: 1, e1: 2}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Invalid line in edge list: 1,2")]
     fn from_edge_list_invalid_edge_list() {
-        Graph::from_edge_list("1,2\n2 3", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1,2\n2 3", "1 2").unwrap_err(),
+            GraphError::ErrEdgeListLine{line: "1,2".to_string()}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Could not parse edge index: a")]
     fn from_edge_list_invalid_left_edge_index() {
-        Graph::from_edge_list("1 2\na 3", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\na 3", "1 2").unwrap_err(),
+            GraphError::ErrEdgeIndexParse{edge_index: "a".to_string()}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Could not parse edge index: a")]
     fn from_edge_list_invalid_right_edge_index() {
-        Graph::from_edge_list("1 2\n3 a", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\n3 a", "1 2").unwrap_err(),
+            GraphError::ErrEdgeIndexParse{edge_index: "a".to_string()}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Empty edge list")]
     fn from_edge_list_empty_edge_list() {
-        Graph::from_edge_list("", "").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("", "").unwrap_err(),
+            GraphError::ErrEmptyEdgeList);
     }
 
     #[test]
-    #[should_panic(expected = "Could not parse population value: a")]
     fn from_edge_list_invalid_population_value() {
-        Graph::from_edge_list("1 2\n2 3", "1 a").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\n2 3", "1 a").unwrap_err(),
+            GraphError::ErrPopulationParse{pop: "a".to_string()}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Mismatch: edge list has 3 nodes, population list has 2 nodes")]
     fn from_edge_list_length_mismatch() {
-        Graph::from_edge_list("1 2\n2 3", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\n2 3", "1 2").unwrap_err(),
+            GraphError::ErrNodeLengthMismatch{edge_list_nodes: 3, pop_list_nodes: 2}
+        );
     }
 }

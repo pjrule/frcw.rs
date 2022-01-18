@@ -1,11 +1,32 @@
-//! Data structures for partitionings (districting plans).
+use snafu::prelude::*;
+
+/// Data structures for partitionings (districting plans).
 use crate::buffers::SubgraphBuffer;
 use crate::graph::{Edge, Graph};
 use crate::recom::RecomProposal;
 
+#[derive(Debug, PartialEq, Snafu)]
+pub enum PartitionError {
+    #[snafu(display("Empty assignment vector"))]
+    ErrEmptyAssignmentVector,
+    #[snafu(display("Assignments must be 1-indexed"))]
+    ErrAssignmentVectorNotOneIndexed,
+    #[snafu(display("District {district_number} has no nodes"))]
+    ErrDistrictHasNoNodes { district_number: usize },
+    #[snafu(display(
+        "Mismatch: graph has {graph_nodes} nodes, assignment vector has {vector_nodes} nodes"
+    ))]
+    ErrGraphMismatchVector {
+        graph_nodes: usize,
+        vector_nodes: usize,
+    },
+    #[snafu(display("Could not parse assignments: {parse_error}"))]
+    ErrParseAssignments { parse_error: String },
+}
+
 /// A partitioning (districting plan) on top of a [Graph].
 /// The graph is referenced implicitly (we don't store a reference to it).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Partition {
     /// The number of districts (parts) in the partitioning.
     pub num_dists: u32,
@@ -173,19 +194,21 @@ impl Partition {
     }
 
     /// Builds a partition from a 1-indexed assignment vector.
-    pub fn from_assignments(graph: &Graph, assignments: &Vec<u32>) -> Result<Partition, String> {
+    pub fn from_assignments(
+        graph: &Graph,
+        assignments: &Vec<u32>,
+    ) -> Result<Partition, PartitionError> {
         match assignments.iter().min() {
-            None => return Err("Empty assignment vector".to_string()),
+            None => return Err(PartitionError::ErrEmptyAssignmentVector),
             Some(1) => (),
-            Some(_) => return Err("Assignments must be 1-indexed".to_string()),
+            Some(_) => return Err(PartitionError::ErrAssignmentVectorNotOneIndexed),
         };
 
         if assignments.len() != graph.neighbors.len() {
-            return Err(format!(
-                "Mismatch: graph has {} nodes, assignment vector has {} nodes",
-                graph.neighbors.len(),
-                assignments.len()
-            ));
+            return Err(PartitionError::ErrGraphMismatchVector {
+                graph_nodes: graph.neighbors.len(),
+                vector_nodes: assignments.len(),
+            });
         }
 
         let num_dists = *assignments.iter().max().unwrap(); // guaranteed nonempty
@@ -199,7 +222,9 @@ impl Partition {
         }
         for (dist, nodes) in dist_nodes.iter().enumerate() {
             if nodes.is_empty() {
-                return Err(format!("District {} has no nodes", dist + 1));
+                return Err(PartitionError::ErrDistrictHasNoNodes {
+                    district_number: dist + 1,
+                });
             }
         }
         let partition = Partition {
@@ -215,7 +240,10 @@ impl Partition {
 
     /// Builds a partition from a space-delimited string representing a
     /// 1-indexed assignment vector.
-    pub fn from_assignment_str(graph: &Graph, assignments: &str) -> Result<Partition, String> {
+    pub fn from_assignment_str(
+        graph: &Graph,
+        assignments: &str,
+    ) -> Result<Partition, PartitionError> {
         match assignments
             .replace('\n', "")
             .split(' ')
@@ -223,7 +251,9 @@ impl Partition {
             .collect()
         {
             Ok(vec) => Partition::from_assignments(graph, &vec),
-            Err(err) => Err(format!("Could not parse assignments: {}", err)),
+            Err(err) => Err(PartitionError::ErrParseAssignments {
+                parse_error: err.to_string(),
+            }),
         }
     }
 }
@@ -246,43 +276,53 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Assignments must be 1-indexed")]
     fn from_assignments_zero_indexed() {
         let grid = Graph::rect_grid(2, 2);
         let assignments = vec![0, 0, 0, 1];
-        Partition::from_assignments(&grid, &assignments).unwrap();
+        assert_eq!(
+            Partition::from_assignments(&grid, &assignments).unwrap_err(),
+            PartitionError::ErrAssignmentVectorNotOneIndexed
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Assignments must be 1-indexed")]
     fn from_assignments_two_indexed() {
         let grid = Graph::rect_grid(2, 2);
         let assignments = vec![2, 2, 2, 3];
-        Partition::from_assignments(&grid, &assignments).unwrap();
+        assert_eq!(
+            Partition::from_assignments(&grid, &assignments).unwrap_err(),
+            PartitionError::ErrAssignmentVectorNotOneIndexed
+        );
     }
 
     #[test]
-    #[should_panic(expected = "District 2 has no nodes")]
     fn from_assignments_missing_district() {
         let grid = Graph::rect_grid(2, 2);
         let assignments = vec![1, 1, 1, 3];
-        Partition::from_assignments(&grid, &assignments).unwrap();
+        assert_eq!(
+            Partition::from_assignments(&grid, &assignments).unwrap_err(),
+            PartitionError::ErrDistrictHasNoNodes{district_number: 2}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Mismatch: graph has 4 nodes, assignment vector has 3 nodes")]
     fn from_assignments_length_mismatch() {
         let grid = Graph::rect_grid(2, 2);
         let assignments = vec![1, 1, 3];
-        Partition::from_assignments(&grid, &assignments).unwrap();
+        assert_eq!(
+            Partition::from_assignments(&grid, &assignments).unwrap_err(),
+            PartitionError::ErrGraphMismatchVector {graph_nodes: 4, vector_nodes: 3}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Empty assignment vector")]
     fn from_assignments_empty() {
         let grid = Graph::rect_grid(2, 2);
         let assignments = vec![];
-        Partition::from_assignments(&grid, &assignments).unwrap();
+        assert_eq!(
+            Partition::from_assignments(&grid, &assignments).unwrap_err(),
+            PartitionError::ErrEmptyAssignmentVector
+        );
     }
 
     #[test]
@@ -299,10 +339,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Could not parse assignments")]
     fn from_assignment_str_bad_char() {
         let grid = Graph::rect_grid(2, 2);
         let assignments = "1 1 1 a";
-        Partition::from_assignment_str(&grid, &assignments).unwrap();
+        assert_eq!(
+            Partition::from_assignment_str(&grid, &assignments).unwrap_err(),
+            PartitionError::ErrParseAssignments {parse_error: "invalid digit found in string".to_string()}
+        );
     }
 }
