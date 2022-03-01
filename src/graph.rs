@@ -1,4 +1,5 @@
 //! A lightweight graph with population metadata.
+use snafu::prelude::*;
 use std::cmp::{max, min};
 use std::collections::HashMap;
 
@@ -6,8 +7,29 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub struct Edge(pub usize, pub usize);
 
+#[derive(Debug, PartialEq, Snafu)]
+pub enum GraphError {
+    #[snafu(display("Empty edge list"))]
+    ErrEmptyEdgeList,
+    #[snafu(display("Could not parse edge index: {edge_index}"))]
+    ErrEdgeIndexParse { edge_index: String },
+    #[snafu(display("Invalid line in edge list: {line}"))]
+    ErrEdgeListLine { line: String },
+    #[snafu(display("Edges must be 0-indexed or 1-indexed, but minimum index is {value}"))]
+    ErrEdgeIndexMinimumValue { value: usize },
+    #[snafu(display("Duplicate edge: {e0} {e1}"))]
+    ErrDuplicateEdge { e0: usize, e1: usize },
+    #[snafu(display("Mismatch: edge list has {edge_list_nodes} nodes, population list has {pop_list_nodes} nodes"))]
+    ErrNodeLengthMismatch {
+        edge_list_nodes: usize,
+        pop_list_nodes: usize,
+    },
+    #[snafu(display("Could not parse population value: {pop}"))]
+    ErrPopulationParse { pop: String },
+}
+
 /// A lightweight graph with population metadata.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Graph {
     /// The graph's edges, represented as pairs of node indices,
     /// sorted by the first element of the pair.
@@ -58,10 +80,10 @@ impl Graph {
     ///
     /// The caller is responsible for ensuring the graph is connected
     /// (if that property is desired).
-    pub fn from_edge_list(edge_list: &str, populations: &str) -> Result<Graph, String> {
+    pub fn from_edge_list(edge_list: &str, populations: &str) -> Result<Graph, GraphError> {
         let mut edges = Vec::<Edge>::new();
         if edge_list.is_empty() {
-            return Err("Empty edge list".to_string());
+            return Err(GraphError::ErrEmptyEdgeList);
         }
         for line in edge_list.split('\n') {
             if line.is_empty() {
@@ -69,15 +91,23 @@ impl Graph {
             }
             let indices: Vec<&str> = line.split(' ').collect();
             if indices.len() != 2 {
-                return Err(format!("Invalid line in edge list: {}", line));
+                return Err(GraphError::ErrEdgeListLine { line: line.into() });
             }
             let src = match indices[0].parse::<usize>() {
                 Ok(idx) => idx,
-                Err(_) => return Err(format!("Could not parse edge index: {}", indices[0])),
+                Err(_) => {
+                    return Err(GraphError::ErrEdgeIndexParse {
+                        edge_index: indices[0].into(),
+                    })
+                }
             };
             let dst = match indices[1].parse::<usize>() {
                 Ok(idx) => idx,
-                Err(_) => return Err(format!("Could not parse edge index: {}", indices[1])),
+                Err(_) => {
+                    return Err(GraphError::ErrEdgeIndexParse {
+                        edge_index: indices[1].into(),
+                    })
+                }
             };
             edges.push(Edge(min(src, dst), max(src, dst)));
         }
@@ -91,10 +121,7 @@ impl Graph {
             n = max_index;
             edges = edges.iter().map(|e| Edge(e.0 - 1, e.1 - 1)).collect();
         } else {
-            return Err(format!(
-                "Edges must be 0-indexed or 1-indexed, but minimum index is {}",
-                min_index
-            ));
+            return Err(GraphError::ErrEdgeIndexMinimumValue { value: min_index });
         }
         edges.sort();
         let mut edges_start = Vec::<usize>::new();
@@ -110,7 +137,10 @@ impl Graph {
                 src = edge.0;
             }
             if neighbors[edge.0].contains(&edge.1) {
-                return Err(format!("Duplicate edge: {} {}", edge.0 + 1, edge.1 + 1));
+                return Err(GraphError::ErrDuplicateEdge {
+                    e0: edge.0 + 1,
+                    e1: edge.1 + 1,
+                });
             }
             neighbors[edge.0].push(edge.1);
             neighbors[edge.1].push(edge.0);
@@ -124,15 +154,14 @@ impl Graph {
         for pop in populations.replace('\n', "").split(' ') {
             match pop.parse::<u32>() {
                 Ok(parsed) => parsed_pops.push(parsed),
-                Err(_) => return Err(format!("Could not parse population value: {}", pop)),
+                Err(_) => return Err(GraphError::ErrPopulationParse { pop: pop.into() }),
             }
         }
         if parsed_pops.len() != neighbors.len() {
-            return Err(format!(
-                "Mismatch: edge list has {} nodes, population list has {} nodes",
-                neighbors.len(),
-                parsed_pops.len()
-            ));
+            return Err(GraphError::ErrNodeLengthMismatch {
+                edge_list_nodes: neighbors.len(),
+                pop_list_nodes: parsed_pops.len(),
+            });
         }
 
         Ok(Graph {
@@ -327,44 +356,57 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Duplicate edge: 1 2")]
     fn from_edge_list_duplicate_edge() {
-        Graph::from_edge_list("1 2\n1 2", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\n1 2", "1 2").unwrap_err(),
+            GraphError::ErrDuplicateEdge {e0: 1, e1: 2}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Invalid line in edge list: 1,2")]
     fn from_edge_list_invalid_edge_list() {
-        Graph::from_edge_list("1,2\n2 3", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1,2\n2 3", "1 2").unwrap_err(),
+            GraphError::ErrEdgeListLine{line: "1,2".to_string()}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Could not parse edge index: a")]
     fn from_edge_list_invalid_left_edge_index() {
-        Graph::from_edge_list("1 2\na 3", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\na 3", "1 2").unwrap_err(),
+            GraphError::ErrEdgeIndexParse{edge_index: "a".to_string()}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Could not parse edge index: a")]
     fn from_edge_list_invalid_right_edge_index() {
-        Graph::from_edge_list("1 2\n3 a", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\n3 a", "1 2").unwrap_err(),
+            GraphError::ErrEdgeIndexParse{edge_index: "a".to_string()}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Empty edge list")]
     fn from_edge_list_empty_edge_list() {
-        Graph::from_edge_list("", "").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("", "").unwrap_err(),
+            GraphError::ErrEmptyEdgeList);
     }
 
     #[test]
-    #[should_panic(expected = "Could not parse population value: a")]
     fn from_edge_list_invalid_population_value() {
-        Graph::from_edge_list("1 2\n2 3", "1 a").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\n2 3", "1 a").unwrap_err(),
+            GraphError::ErrPopulationParse{pop: "a".to_string()}
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Mismatch: edge list has 3 nodes, population list has 2 nodes")]
     fn from_edge_list_length_mismatch() {
-        Graph::from_edge_list("1 2\n2 3", "1 2").unwrap();
+        assert_eq!(
+            Graph::from_edge_list("1 2\n2 3", "1 2").unwrap_err(),
+            GraphError::ErrNodeLengthMismatch{edge_list_nodes: 3, pop_list_nodes: 2}
+        );
     }
 }
