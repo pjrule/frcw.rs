@@ -10,3 +10,12 @@ target/
 .*.swo
 ~*~
 .DS_Store
+
+# python nonsense
+activate/
+build/
+dist/
+*.egg-info
+
+# JetBrains IDE workspace settings
+.idea/
