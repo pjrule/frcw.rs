@@ -201,6 +201,9 @@ fn main() {
             .unwrap()
             .insert("region_weights".to_string(), json!(region_weights));
     }
-    println!("{}", json!({ "meta": meta }).to_string());
+    if writer_str != "pcompress" { // hotfix for pcompress writing
+        // TODO: move this into init
+        println!("{}", json!({ "meta": meta }).to_string());
+    }
     multi_chain(&graph, &partition, writer, &params, n_threads, batch_size);
 }
