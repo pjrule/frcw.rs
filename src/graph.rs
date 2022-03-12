@@ -359,7 +359,7 @@ mod tests {
     fn from_edge_list_duplicate_edge() {
         assert_eq!(
             Graph::from_edge_list("1 2\n1 2", "1 2").unwrap_err(),
-            GraphError::ErrDuplicateEdge {e0: 1, e1: 2}
+            GraphError::ErrDuplicateEdge { e0: 1, e1: 2 }
         );
     }
 
@@ -367,7 +367,9 @@ mod tests {
     fn from_edge_list_invalid_edge_list() {
         assert_eq!(
             Graph::from_edge_list("1,2\n2 3", "1 2").unwrap_err(),
-            GraphError::ErrEdgeListLine{line: "1,2".to_string()}
+            GraphError::ErrEdgeListLine {
+                line: "1,2".to_string()
+            }
         );
     }
 
@@ -375,7 +377,9 @@ mod tests {
     fn from_edge_list_invalid_left_edge_index() {
         assert_eq!(
             Graph::from_edge_list("1 2\na 3", "1 2").unwrap_err(),
-            GraphError::ErrEdgeIndexParse{edge_index: "a".to_string()}
+            GraphError::ErrEdgeIndexParse {
+                edge_index: "a".to_string()
+            }
         );
     }
 
@@ -383,7 +387,9 @@ mod tests {
     fn from_edge_list_invalid_right_edge_index() {
         assert_eq!(
             Graph::from_edge_list("1 2\n3 a", "1 2").unwrap_err(),
-            GraphError::ErrEdgeIndexParse{edge_index: "a".to_string()}
+            GraphError::ErrEdgeIndexParse {
+                edge_index: "a".to_string()
+            }
         );
     }
 
@@ -391,14 +397,17 @@ mod tests {
     fn from_edge_list_empty_edge_list() {
         assert_eq!(
             Graph::from_edge_list("", "").unwrap_err(),
-            GraphError::ErrEmptyEdgeList);
+            GraphError::ErrEmptyEdgeList
+        );
     }
 
     #[test]
     fn from_edge_list_invalid_population_value() {
         assert_eq!(
             Graph::from_edge_list("1 2\n2 3", "1 a").unwrap_err(),
-            GraphError::ErrPopulationParse{pop: "a".to_string()}
+            GraphError::ErrPopulationParse {
+                pop: "a".to_string()
+            }
         );
     }
 
@@ -406,7 +415,10 @@ mod tests {
     fn from_edge_list_length_mismatch() {
         assert_eq!(
             Graph::from_edge_list("1 2\n2 3", "1 2").unwrap_err(),
-            GraphError::ErrNodeLengthMismatch{edge_list_nodes: 3, pop_list_nodes: 2}
+            GraphError::ErrNodeLengthMismatch {
+                edge_list_nodes: 3,
+                pop_list_nodes: 2
+            }
         );
     }
 }

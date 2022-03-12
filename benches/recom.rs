@@ -3,7 +3,7 @@ use frcw::graph::Graph;
 use frcw::partition::Partition;
 use frcw::recom::run::multi_chain;
 use frcw::recom::{RecomParams, RecomProposal, RecomVariant};
-use frcw::stats::{ChainCounts, StatsWriter};
+use frcw::stats::{SelfLoopCounts, StatsWriter};
 use std::default::Default;
 /// ReCom chain benchmarks.
 use std::time::Instant;
@@ -24,7 +24,7 @@ impl StatsWriter for DummyWriter {
         _step: u64,
         _graph: &Graph,
         _proposal: &RecomProposal,
-        _counts: &ChainCounts,
+        _counts: &SelfLoopCounts,
     ) {
     }
 
@@ -42,7 +42,7 @@ fn grid_single_thread_recom_benchmark(c: &mut Criterion) {
                 num_steps: iters,
                 rng_seed: RNG_SEED,
                 balance_ub: 0,
-                variant: RecomVariant::DistrictPairs,
+                variant: RecomVariant::DistrictPairsRMST,
             };
             let start = Instant::now();
             multi_chain(&graph, &partition, writer, params, 1, 1);

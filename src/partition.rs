@@ -301,7 +301,7 @@ mod tests {
         let assignments = vec![1, 1, 1, 3];
         assert_eq!(
             Partition::from_assignments(&grid, &assignments).unwrap_err(),
-            PartitionError::ErrDistrictHasNoNodes{district_number: 2}
+            PartitionError::ErrDistrictHasNoNodes { district_number: 2 }
         );
     }
 
@@ -311,7 +311,10 @@ mod tests {
         let assignments = vec![1, 1, 3];
         assert_eq!(
             Partition::from_assignments(&grid, &assignments).unwrap_err(),
-            PartitionError::ErrGraphMismatchVector {graph_nodes: 4, vector_nodes: 3}
+            PartitionError::ErrGraphMismatchVector {
+                graph_nodes: 4,
+                vector_nodes: 3
+            }
         );
     }
 
@@ -344,7 +347,9 @@ mod tests {
         let assignments = "1 1 1 a";
         assert_eq!(
             Partition::from_assignment_str(&grid, &assignments).unwrap_err(),
-            PartitionError::ErrParseAssignments {parse_error: "invalid digit found in string".to_string()}
+            PartitionError::ErrParseAssignments {
+                parse_error: "invalid digit found in string".to_string()
+            }
         );
     }
 }

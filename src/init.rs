@@ -14,7 +14,7 @@ use std::fs;
 /// # Arguments
 ///
 /// * `path` - the path of the graph JSON file.
-/// * `population` - The column in the graph JSON corresponding to total node
+/// * `pop_col` - The column in the graph JSON corresponding to total node
 ///    population. This column should be integer-valued.
 /// * `assignment_col` - A column in the graph JSON corresponding to a
 ///    a seed partition. This column should be integer-valued and 1-indexed.
@@ -25,6 +25,36 @@ pub fn from_networkx(
     assignment_col: &str,
     columns: Vec<String>,
 ) -> SerdeResult<(Graph, Partition)> {
+    let (graph, data) = match graph_from_networkx(path, pop_col, columns) {
+        Ok(v) => v,
+        Err(e) => return Err(e),
+    };
+
+    let raw_nodes = data["nodes"].as_array().unwrap();
+    let assignments: Vec<u32> = raw_nodes
+        .iter()
+        .map(|node| node[assignment_col].as_u64().unwrap() as u32)
+        .collect();
+    let partition = Partition::from_assignments(&graph, &assignments).unwrap();
+    return Ok((graph, partition));
+}
+
+/// Loads graph data in the NetworkX `adjacency_data` format
+/// used by [GerryChain](https://github.com/mggg/gerrychain). Returns a
+/// [serde_json::Result] containing a [graph::Graph] and the raw
+/// graph JSON tree upon a successful load.
+///
+/// # Arguments
+///
+/// * `path` - the path of the graph JSON file.
+/// * `pop_col` - The column in the graph JSON corresponding to total node
+///    population. This column should be integer-valued.
+/// * `columns` - The metadata columns to sum over (per district).
+pub fn graph_from_networkx(
+    path: &str,
+    pop_col: &str,
+    columns: Vec<String>,
+) -> SerdeResult<(Graph, Value)> {
     // TODO: should load from a generic buffer.
     let raw = fs::read_to_string(path).expect("Could not load graph");
     let data: Value = serde_json::from_str(&raw)?;
@@ -34,7 +64,6 @@ pub fn from_networkx(
     let num_nodes = raw_nodes.len();
     let mut pops = Vec::<u32>::with_capacity(num_nodes);
     let mut neighbors = Vec::<Vec<usize>>::with_capacity(num_nodes);
-    let mut assignments = Vec::<u32>::with_capacity(num_nodes);
     let mut edges = Vec::<Edge>::new();
     let mut edges_start = vec![0 as usize; num_nodes];
     let mut attr = HashMap::new();
@@ -57,9 +86,6 @@ pub fn from_networkx(
         }
         pops.push(node[pop_col].as_u64().unwrap() as u32);
         neighbors.push(node_neighbors.clone());
-        // TODO: we assume that assignments are 1-indexed. This is not always the case
-        // in real data and can be inconvenient to fix. We should remove this assumption.
-        assignments.push(node[assignment_col].as_u64().unwrap() as u32);
 
         for neighbor in &node_neighbors {
             if neighbor > &index {
@@ -70,7 +96,6 @@ pub fn from_networkx(
     }
 
     let total_pop = pops.iter().sum();
-
     let graph = Graph {
         pops: pops,
         neighbors: neighbors,
@@ -79,6 +104,5 @@ pub fn from_networkx(
         total_pop: total_pop,
         attr: attr,
     };
-    let partition = Partition::from_assignments(&graph, &assignments).unwrap();
-    return Ok((graph, partition));
+    return Ok((graph, data));
 }
