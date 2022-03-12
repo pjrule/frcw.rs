@@ -7,6 +7,9 @@ use clap::{value_t, App, Arg};
 use frcw::init::graph_from_networkx;
 use std::fs;
 use std::path::PathBuf;
+use std::collections::HashMap;
+use petgraph::graph::{Graph, NodeIndex};
+
 
 fn main() {
     let cli = App::new("gerryql")
@@ -53,7 +56,13 @@ enum QLPrimitive {
     Sub,
     Mult,
     Divide,
+    Sort,
     Sum,
+    Min,
+    Max,
+    Median,
+    Mode,
+    Mean,
     Eq,
     Gt,
     Geq,
@@ -64,12 +73,14 @@ enum QLPrimitive {
     Not,
 }
 
+/// Kinds of primitive GerryQL 
 #[derive(Copy, Clone, PartialEq, Debug)]
 enum QLPrimitiveKind {
     Unary,
     Binary,
     Cmp,
     Agg,
+    Bool,
 }
 
 /// GerryQL expressions.
@@ -82,11 +93,23 @@ enum QLExpr {
     Column(String),
 }
 
+/// GerryQL values.
+#[derive(Clone, PartialEq, Debug)]
+enum QLValue {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    VecBool(Vec<bool>),
+    VecInt(Vec<i64>),
+    VecFloat(V<f64>)
+}
+
+/// GerryQL errors.
 #[derive(Clone, PartialEq, Debug)]
 enum QLError {
     UnexpectedEOF,
     MissingOpenParen,
-    ExtraClosingParen,
+    ExtraCloseParen,
     ExtraChars,
     ExpectedFuncName,
     UnreachableState,
@@ -95,6 +118,7 @@ enum QLError {
     TooManyArguments(QLPrimitive),
 }
 
+//// Parsed GerryQL tokens.
 #[derive(Clone, PartialEq, Debug)]
 enum QLToken {
     StartCall,
@@ -125,7 +149,13 @@ fn token_to_primitive(token: &str) -> Option<QLPrimitive> {
         "-" => Some(QLPrimitive::Sub),
         "*" => Some(QLPrimitive::Mult),
         "/" => Some(QLPrimitive::Divide),
+        "sort" => Some(QLPrimitive::Sort),
         "sum" => Some(QLPrimitive::Sum),
+        "min" => Some(QLPrimitive::Min),
+        "max" => Some(QLPrimitive::Max),
+        "median" => Some(QLPrimitive::Median),
+        "mode" => Some(QLPrimitive::Mode),
+        "mean" => Some(QLPrimitive::Mean),
         "=" => Some(QLPrimitive::Eq),
         ">" => Some(QLPrimitive::Gt),
         ">=" => Some(QLPrimitive::Geq),
@@ -145,7 +175,13 @@ fn primitive_kind(prim: QLPrimitive) -> QLPrimitiveKind {
         QLPrimitive::Sub => QLPrimitiveKind::Binary,
         QLPrimitive::Divide => QLPrimitiveKind::Binary,
         QLPrimitive::Mult => QLPrimitiveKind::Binary,
+        QLPrimitive::Sort => QLPrimitiveKind::Unary,
         QLPrimitive::Sum => QLPrimitiveKind::Agg,
+        QLPrimitive::Min => QLPrimitiveKind::Agg,
+        QLPrimitive::Max => QLPrimitiveKind::Agg,
+        QLPrimitive::Median => QLPrimitiveKind::Agg,
+        QLPrimitive::Mode => QLPrimitiveKind::Agg,
+        QLPrimitive::Mean => QLPrimitiveKind::Agg,
         QLPrimitive::Eq => QLPrimitiveKind::Cmp,
         QLPrimitive::Gt => QLPrimitiveKind::Cmp,
         QLPrimitive::Geq => QLPrimitiveKind::Cmp,
@@ -190,9 +226,9 @@ fn parse_next_expr(tokens: &[String]) -> Result<(QLExpr, &[String]), QLError> {
     let token = &tokens[0];
     let tt = parse_token(&token);
     if tt == QLToken::StartCall {
-        // We expect at least four tokens in the stream:
-        // [open] [primitive name] [≥ 1 arg] [close]
-        if tokens.len() < 4 {
+        // We expect at least three tokens in the stream:
+        // [open] [primitive name] [close]
+        if tokens.len() < 3 {
             return Err(QLError::UnexpectedEOF);
         }
         if let Some(prim) = token_to_primitive(&tokens[1]) {
@@ -219,6 +255,9 @@ fn parse_next_expr(tokens: &[String]) -> Result<(QLExpr, &[String]), QLError> {
             if rest.len() > 0 && parse_token(&rest[0]) != QLToken::EndCall {
                 return Err(QLError::TooManyArguments(prim));
             }
+            if rest.len() == 0 {
+                return Err(QLError::UnexpectedEOF);
+            }
             return Ok((QLExpr::PrimitiveCall(prim, args), &rest[1..]));
         } else {
             return Err(QLError::ExpectedFuncName);
@@ -233,6 +272,7 @@ fn parse_next_expr(tokens: &[String]) -> Result<(QLExpr, &[String]), QLError> {
         QLToken::ColumnLiteral(val) => Ok((QLExpr::Column(val), rest)),
         QLToken::EndCall => Err(QLError::UnexpectedEOF),
         QLToken::Unknown => Err(QLError::BadToken(token.to_owned())),
+        QLToken::PrimitiveName(_) => Err(QLError::MissingOpenParen),
         _ => Err(QLError::UnreachableState),
     }
 }
@@ -252,42 +292,240 @@ fn parse_expr(raw_expr: String) -> Result<QLExpr, QLError> {
     }
 }
 
+/// What kind of computation does the data flow graph represent?
+enum QLNodeKind {
+    Primitive(QLPrimitive),
+    Constant,
+    Column(String)
+}
+
+/// How should a computation's value be updated?
+enum QLUpdate {
+    /// Any time a tracked property of a districting plan changes,
+    /// update the whole node.
+    All,
+    /// The node contains a vector of values with length equal
+    /// to the number of districts expected in a plan. We can
+    /// safely update district-level statistics without updating
+    /// every entry in the vector.
+    PerDistrict
+}
+
+/// A node in a GerryQL expression's computation/dependency graph.
+struct QLComputeNode {
+    kind: QLNodeKind,
+    update: QLUpdate,
+    value: Option<QLValue>,
+}
+
+/// Edges in the dependency graphs are labeled with argument IDs.
+type QLComputeEdge = usize;
+
+
+type QLComputeGraph = Graph::<QLComputeNode, QLComputeEdge>;
+
+/// Generates a computation graph from a GerryQL expression.
+fn expr_to_node(expr: &QLExpr, graph: &mut QLComputeGraph, parent: Option<NodeIndex>, child_id: Option<QLComputeEdge>) {
+    // Convert the expression to compute graph metadata.
+    let (kind, value, deps) = match expr {
+        QLExpr::Bool(v) => (QLNodeKind::Constant, Some(QLValue::Bool(v.to_owned())), None),
+        QLExpr::Int(v) => (QLNodeKind::Constant, Some(QLValue::Int(v.to_owned())), None),
+        QLExpr::Float(v) => (QLNodeKind::Constant, Some(QLValue::Float(v.to_owned())), None),
+        QLExpr::PrimitiveCall(prim, args) => (QLNodeKind::Primitive(prim.to_owned()), None, Some(args)),
+        QLExpr::Column(col) => (QLNodeKind::Column(col.to_owned()), None, None)
+    };
+    let node_idx = graph.add_node(QLComputeNode {
+        kind: kind,
+        value: value,
+        update: QLUpdate::All,  // Be conservative initially.
+    });
+
+    // Add a dependency edge from the new node to the parent, if there's
+    // a parent available.
+    if let Some(parent_idx) = parent {
+        graph.add_edge(node_idx, parent_idx, child_id.unwrap());
+    }
+
+    // Create nodes and edges for the subexpressions (dependencies).
+    if let Some(children) = deps {
+        for (dep_id, dep) in children.iter().enumerate() {
+            expr_to_node(dep, graph, Some(node_idx), Some(dep_id));
+        }
+    }
+
+    // 
+}
+
+
+// _column_sums: &HashMap<String, Vec<u32>>
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn test_parse_bool_literal_true() {
-        assert_eq!(parse_expr("true".to_string()), Ok(QLExpr::Bool(true)));
+    fn test_parse_expr_bool_literal_true() {
+        assert_eq!(parse_expr("true".to_string()), Ok(QLExpr::Bool(true)))
     }
 
     #[test]
-    fn test_parse_bool_literal_false() {
-        assert_eq!(parse_expr("false".to_string()), Ok(QLExpr::Bool(false)));
+    fn test_parse_expr_bool_literal_false() {
+        assert_eq!(parse_expr("false".to_string()), Ok(QLExpr::Bool(false)))
     }
 
     #[test]
-    fn test_parse_int_literal_positive() {
-        assert_eq!(parse_expr("123".to_string()), Ok(QLExpr::Int(123)));
+    fn test_parse_expr_int_literal_positive() {
+        assert_eq!(parse_expr("123".to_string()), Ok(QLExpr::Int(123)))
     }
 
     #[test]
-    fn test_parse_int_literal_negative() {
-        assert_eq!(parse_expr("-123".to_string()), Ok(QLExpr::Int(-123)));
+    fn test_parse_expr_int_literal_negative() {
+        assert_eq!(parse_expr("-123".to_string()), Ok(QLExpr::Int(-123)))
     }
 
     #[test]
-    fn test_parse_float_literal_positive() {
+    fn test_parse_expr_float_literal_positive() {
         assert_eq!(
             parse_expr("123.456".to_string()),
             Ok(QLExpr::Float(123.456))
-        );
+        )
     }
 
     #[test]
-    fn test_parse_float_literal_negative() {
+    fn test_parse_expr_float_literal_negative() {
         assert_eq!(
             parse_expr("-123.456".to_string()),
             Ok(QLExpr::Float(-123.456))
-        );
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_column_literal_valid() {
+        assert_eq!(
+            parse_expr(".TOTPOP".to_string()),
+            Ok(QLExpr::Column(".TOTPOP".to_string()))
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_column_literal_invalid() {
+        assert_eq!(
+            parse_expr(".".to_string()), // can't have empty column name
+            Err(QLError::BadToken(".".to_string()))
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_add_two_ints() {
+        assert_eq!(
+            parse_expr("(+ 1 2)".to_string()),
+            Ok(QLExpr::PrimitiveCall(
+                QLPrimitive::Add,
+                vec![QLExpr::Int(1), QLExpr::Int(2)]
+            ))
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_add_two_floats() {
+        assert_eq!(
+            parse_expr("(+ 1.0 2.0)".to_string()),
+            Ok(QLExpr::PrimitiveCall(
+                QLPrimitive::Add,
+                vec![QLExpr::Float(1.0), QLExpr::Float(2.0)]
+            ))
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_add_two_columns() {
+        assert_eq!(
+            parse_expr("(+ .BPOP .TOTPOP)".to_string()),
+            Ok(QLExpr::PrimitiveCall(
+                QLPrimitive::Add,
+                vec![
+                    QLExpr::Column(".BPOP".to_string()),
+                    QLExpr::Column(".TOTPOP".to_string())
+                ]
+            ))
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_add_one_arg() {
+        assert_eq!(
+            parse_expr("(+ 1)".to_string()),
+            Err(QLError::TooFewArguments(QLPrimitive::Add))
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_add_three_arg() {
+        assert_eq!(
+            parse_expr("(+ 1 2 3)".to_string()),
+            Err(QLError::TooManyArguments(QLPrimitive::Add))
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_add_nested_expr() {
+        assert_eq!(
+            parse_expr("(+ (+ (+ .BPOP .TOTPOP) 1.0) 2)".to_string()),
+            Ok(QLExpr::PrimitiveCall(
+                QLPrimitive::Add,
+                vec![
+                    QLExpr::PrimitiveCall(
+                        QLPrimitive::Add,
+                        vec![
+                            QLExpr::PrimitiveCall(
+                                QLPrimitive::Add,
+                                vec![
+                                    QLExpr::Column(".BPOP".to_string()),
+                                    QLExpr::Column(".TOTPOP".to_string())
+                                ]
+                            ),
+                            QLExpr::Float(1.0)
+                        ]
+                    ),
+                    QLExpr::Int(2)
+                ]
+            ))
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_unknown_function_name() {
+        assert_eq!(
+            parse_expr("(1)".to_string()),
+            Err(QLError::ExpectedFuncName),
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_missing_open_paren() {
+        assert_eq!(
+            parse_expr("+ 1 2)".to_string()),
+            Err(QLError::MissingOpenParen),
+        )
+    }
+
+    fn test_parse_expr_missing_close_paren() {
+        assert_eq!(
+            parse_expr("(+ 1 2".to_string()),
+            Err(QLError::UnexpectedEOF),
+        )
+    }
+
+    fn test_parse_expr_extra_close_paren() {
+        assert_eq!(
+            parse_expr("(+ 1 2))".to_string()),
+            Err(QLError::ExtraCloseParen),
+        )
+    }
+
+    fn test_parse_expr_extra_close_parens() {
+        assert_eq!(
+            parse_expr("(+ 1 2)))".to_string()),
+            Err(QLError::ExtraCloseParen),
+        )
     }
 }
