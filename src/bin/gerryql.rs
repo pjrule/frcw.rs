@@ -5,11 +5,12 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{value_t, App, Arg};
 use frcw::init::graph_from_networkx;
-use std::fs;
-use std::path::PathBuf;
-use std::collections::HashMap;
 use petgraph::graph::{Graph, NodeIndex};
-
+use serde_json::Value;
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{self, BufRead};
+use std::path::{Path, PathBuf};
 
 fn main() {
     let cli = App::new("gerryql")
@@ -20,14 +21,14 @@ fn main() {
             Arg::with_name("graph_json")
                 .long("graph-json")
                 .takes_value(true)
-                .required(true)
+                //.required(true)
                 .help("The path of the dual graph (in NetworkX format)."),
         )
         .arg(
             Arg::with_name("chain_data")
                 .long("chain-data")
                 .takes_value(true)
-                .required(true)
+                //.required(true)
                 .help("The path of the chain run data (in JSONL format)."),
         )
         .arg(
@@ -38,15 +39,99 @@ fn main() {
                 .help("The number of threads to use."),
         );
     let matches = cli.get_matches();
+    /*
     let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
     let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap()))
         .unwrap()
         .into_os_string()
         .into_string()
         .unwrap();
-    let pop_col = matches.value_of("pop_col").unwrap();
+    let chain_data_path =
+        fs::canonicalize(PathBuf::from(matches.value_of("chain_data").unwrap())).unwrap();
+    */
+    println!("val,freq");
+    for (val, freq) in stats_demo().unwrap().iter() {
+        println!("{},{}", val, freq);
+    }
 
-    let (graph, _) = graph_from_networkx(&graph_json, pop_col, vec![]).unwrap();
+    //let (graph, _) = graph_from_networkx(&graph_json, pop_col, vec![]).unwrap();
+}
+
+/// Hardcoded stats from stdin (will be replaced later).
+fn stats_demo() -> Result<HashMap<u64, u64>, io::Error> {
+    let bpop_col = "BPOP20";
+    let mut started = false;
+    let mut black_shares = Vec::<f64>::new();
+    let mut black_maj_hist = HashMap::<u64, u64>::new();
+    for (line, contents) in io::stdin().lock().lines().enumerate() {
+        let line_data: Value = match serde_json::from_str(&contents?) {
+            Ok(data) => data,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Could not parse line {} as JSON", line),
+                ))
+            }
+        };
+        if let Some(init_data) = line_data.get("init") {
+            if started {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Double initialization on line {}", line),
+                ));
+            }
+            let pop_data = init_data.as_object().unwrap()["populations"]
+                .as_array()
+                .unwrap();
+            let bpop_data = init_data.as_object().unwrap()["sums"].as_object().unwrap()[bpop_col]
+                .as_array()
+                .unwrap();
+            let pops: Vec<u64> = pop_data.iter().map(|c| c.as_u64().unwrap()).collect();
+            let bpops: Vec<u64> = bpop_data.iter().map(|c| c.as_u64().unwrap()).collect();
+            black_shares = pops
+                .iter()
+                .zip(bpops.iter())
+                .map(|(p, bp)| *bp as f64 / *p as f64)
+                .collect();
+            started = true;
+        }
+        if let Some(step_data) = line_data.get("step") {
+            if !started {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Step before initialization on line {}", line),
+                ));
+            }
+            let dists: Vec<usize> = step_data["dists"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d.as_u64().unwrap() as usize)
+                .collect();
+            let step_pops: Vec<u64> = step_data["populations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d.as_u64().unwrap())
+                .collect();
+            let step_bpops: Vec<u64> = step_data["sums"].as_object().unwrap()[bpop_col]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c.as_u64().unwrap())
+                .collect();
+            for ((dist, pop), bpop) in dists.iter().zip(step_pops.iter()).zip(step_bpops.iter()) {
+                black_shares[*dist] = *bpop as f64 / *pop as f64;
+            }
+            let black_maj_count = black_shares.iter().filter(|s| **s >= 0.5).count() as u64;
+            let bin_count = match black_maj_hist.get(&black_maj_count) {
+                Some(c) => *c,
+                None => 0,
+            };
+            black_maj_hist.insert(black_maj_count, bin_count + 1);
+        }
+    }
+    Ok(black_maj_hist)
 }
 
 /// GerryQL basis functions.
@@ -73,7 +158,7 @@ enum QLPrimitive {
     Not,
 }
 
-/// Kinds of primitive GerryQL 
+/// Kinds of primitive GerryQL
 #[derive(Copy, Clone, PartialEq, Debug)]
 enum QLPrimitiveKind {
     Unary,
@@ -101,7 +186,7 @@ enum QLValue {
     Float(f64),
     VecBool(Vec<bool>),
     VecInt(Vec<i64>),
-    VecFloat(V<f64>)
+    VecFloat(Vec<f64>),
 }
 
 /// GerryQL errors.
@@ -296,7 +381,7 @@ fn parse_expr(raw_expr: String) -> Result<QLExpr, QLError> {
 enum QLNodeKind {
     Primitive(QLPrimitive),
     Constant,
-    Column(String)
+    Column(String),
 }
 
 /// How should a computation's value be updated?
@@ -308,7 +393,7 @@ enum QLUpdate {
     /// to the number of districts expected in a plan. We can
     /// safely update district-level statistics without updating
     /// every entry in the vector.
-    PerDistrict
+    PerDistrict,
 }
 
 /// A node in a GerryQL expression's computation/dependency graph.
@@ -321,23 +406,37 @@ struct QLComputeNode {
 /// Edges in the dependency graphs are labeled with argument IDs.
 type QLComputeEdge = usize;
 
-
-type QLComputeGraph = Graph::<QLComputeNode, QLComputeEdge>;
+type QLComputeGraph = Graph<QLComputeNode, QLComputeEdge>;
 
 /// Generates a computation graph from a GerryQL expression.
-fn expr_to_node(expr: &QLExpr, graph: &mut QLComputeGraph, parent: Option<NodeIndex>, child_id: Option<QLComputeEdge>) {
+fn expr_to_node(
+    expr: &QLExpr,
+    graph: &mut QLComputeGraph,
+    parent: Option<NodeIndex>,
+    child_id: Option<QLComputeEdge>,
+) {
     // Convert the expression to compute graph metadata.
     let (kind, value, deps) = match expr {
-        QLExpr::Bool(v) => (QLNodeKind::Constant, Some(QLValue::Bool(v.to_owned())), None),
+        QLExpr::Bool(v) => (
+            QLNodeKind::Constant,
+            Some(QLValue::Bool(v.to_owned())),
+            None,
+        ),
         QLExpr::Int(v) => (QLNodeKind::Constant, Some(QLValue::Int(v.to_owned())), None),
-        QLExpr::Float(v) => (QLNodeKind::Constant, Some(QLValue::Float(v.to_owned())), None),
-        QLExpr::PrimitiveCall(prim, args) => (QLNodeKind::Primitive(prim.to_owned()), None, Some(args)),
-        QLExpr::Column(col) => (QLNodeKind::Column(col.to_owned()), None, None)
+        QLExpr::Float(v) => (
+            QLNodeKind::Constant,
+            Some(QLValue::Float(v.to_owned())),
+            None,
+        ),
+        QLExpr::PrimitiveCall(prim, args) => {
+            (QLNodeKind::Primitive(prim.to_owned()), None, Some(args))
+        }
+        QLExpr::Column(col) => (QLNodeKind::Column(col.to_owned()), None, None),
     };
     let node_idx = graph.add_node(QLComputeNode {
         kind: kind,
         value: value,
-        update: QLUpdate::All,  // Be conservative initially.
+        update: QLUpdate::All, // Be conservative initially.
     });
 
     // Add a dependency edge from the new node to the parent, if there's
@@ -353,9 +452,8 @@ fn expr_to_node(expr: &QLExpr, graph: &mut QLComputeGraph, parent: Option<NodeIn
         }
     }
 
-    // 
+    //
 }
-
 
 // _column_sums: &HashMap<String, Vec<u32>>
 
