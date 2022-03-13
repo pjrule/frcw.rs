@@ -7,7 +7,7 @@ use clap::{value_t, App, Arg};
 use frcw::init::graph_from_networkx;
 use petgraph::graph::{Graph, NodeIndex};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
@@ -49,20 +49,36 @@ fn main() {
     let chain_data_path =
         fs::canonicalize(PathBuf::from(matches.value_of("chain_data").unwrap())).unwrap();
     */
+    let (black_maj_hist, black_near_maj_hist, black_frac_maj_hist) = stats_demo().unwrap();
+    println!("--black ≥50%--");
     println!("val,freq");
-    for (val, freq) in stats_demo().unwrap().iter() {
+    for (val, freq) in black_maj_hist.iter() {
         println!("{},{}", val, freq);
+    }
+    println!("--black ≥40%--");
+    println!("val,freq");
+    for (val, freq) in black_near_maj_hist.iter() {
+        println!("{},{}", val, freq);
+    }
+    println!("--black ≥50% + next highest scaled share--");
+    println!("val,freq");
+    for (val, freq) in black_frac_maj_hist.iter() {
+        println!("{:.3},{}", *val as f64 / 1000.0 as f64, freq);
     }
 
     //let (graph, _) = graph_from_networkx(&graph_json, pop_col, vec![]).unwrap();
 }
 
 /// Hardcoded stats from stdin (will be replaced later).
-fn stats_demo() -> Result<HashMap<u64, u64>, io::Error> {
+fn stats_demo() -> Result<(BTreeMap<u64, u64>,  BTreeMap<u64, u64>, BTreeMap<u64, u64>), io::Error> {
     let bpop_col = "BPOP20";
     let mut started = false;
+    let mut pops = Vec::<u64>::new();
+    let mut bpops = Vec::<u64>::new();
     let mut black_shares = Vec::<f64>::new();
-    let mut black_maj_hist = HashMap::<u64, u64>::new();
+    let mut black_near_maj_hist = BTreeMap::<u64, u64>::new();
+    let mut black_frac_maj_hist = BTreeMap::<u64, u64>::new();  // scaled by 1000
+    let mut black_maj_hist = BTreeMap::<u64, u64>::new();
     for (line, contents) in io::stdin().lock().lines().enumerate() {
         let line_data: Value = match serde_json::from_str(&contents?) {
             Ok(data) => data,
@@ -86,8 +102,8 @@ fn stats_demo() -> Result<HashMap<u64, u64>, io::Error> {
             let bpop_data = init_data.as_object().unwrap()["sums"].as_object().unwrap()[bpop_col]
                 .as_array()
                 .unwrap();
-            let pops: Vec<u64> = pop_data.iter().map(|c| c.as_u64().unwrap()).collect();
-            let bpops: Vec<u64> = bpop_data.iter().map(|c| c.as_u64().unwrap()).collect();
+            pops = pop_data.iter().map(|c| c.as_u64().unwrap()).collect();
+            bpops = bpop_data.iter().map(|c| c.as_u64().unwrap()).collect();
             black_shares = pops
                 .iter()
                 .zip(bpops.iter())
@@ -121,17 +137,37 @@ fn stats_demo() -> Result<HashMap<u64, u64>, io::Error> {
                 .map(|c| c.as_u64().unwrap())
                 .collect();
             for ((dist, pop), bpop) in dists.iter().zip(step_pops.iter()).zip(step_bpops.iter()) {
+                pops[*dist] = *pop;
+                bpops[*dist] = *bpop;
                 black_shares[*dist] = *bpop as f64 / *pop as f64;
             }
+            // Majority black seats.
             let black_maj_count = black_shares.iter().filter(|s| **s >= 0.5).count() as u64;
-            let bin_count = match black_maj_hist.get(&black_maj_count) {
+            let maj_bin_count = match black_maj_hist.get(&black_maj_count) {
                 Some(c) => *c,
                 None => 0,
             };
-            black_maj_hist.insert(black_maj_count, bin_count + 1);
+            black_maj_hist.insert(black_maj_count, maj_bin_count + 1);
+
+            // >40% black seats.
+            let black_near_maj_count = black_shares.iter().filter(|s| **s >= 0.4).count() as u64;
+            let near_maj_bin_count = match black_near_maj_hist.get(&black_near_maj_count) {
+                Some(c) => *c,
+                None => 0,
+            };
+            black_near_maj_hist.insert(black_near_maj_count, near_maj_bin_count + 1);
+
+            // Majority black seats + next greatest seat share.
+            let next_greatest_share = 2.0 * black_shares.clone().into_iter().filter(|s| *s < 0.5).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+            let frac_bin = (1000.0 * (black_maj_count as f64 + next_greatest_share)).round() as u64;
+            let frac_bin_count = match black_frac_maj_hist.get(&frac_bin) {
+                Some(c) => *c,
+                None => 0,
+            };
+            black_frac_maj_hist.insert(frac_bin, frac_bin_count + 1);
         }
     }
-    Ok(black_maj_hist)
+    Ok((black_maj_hist, black_near_maj_hist, black_frac_maj_hist))
 }
 
 /// GerryQL basis functions.
@@ -455,7 +491,7 @@ fn expr_to_node(
     //
 }
 
-// _column_sums: &HashMap<String, Vec<u32>>
+// _column_sums: &BTreeMap<String, Vec<u32>>
 
 #[cfg(test)]
 mod tests {
