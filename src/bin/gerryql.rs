@@ -70,14 +70,14 @@ fn main() {
 }
 
 /// Hardcoded stats from stdin (will be replaced later).
-fn stats_demo() -> Result<(BTreeMap<u64, u64>,  BTreeMap<u64, u64>, BTreeMap<u64, u64>), io::Error> {
+fn stats_demo() -> Result<(BTreeMap<u64, u64>, BTreeMap<u64, u64>, BTreeMap<u64, u64>), io::Error> {
     let bpop_col = "BPOP20";
     let mut started = false;
     let mut pops = Vec::<u64>::new();
     let mut bpops = Vec::<u64>::new();
     let mut black_shares = Vec::<f64>::new();
     let mut black_near_maj_hist = BTreeMap::<u64, u64>::new();
-    let mut black_frac_maj_hist = BTreeMap::<u64, u64>::new();  // scaled by 1000
+    let mut black_frac_maj_hist = BTreeMap::<u64, u64>::new(); // scaled by 1000
     let mut black_maj_hist = BTreeMap::<u64, u64>::new();
     for (line, contents) in io::stdin().lock().lines().enumerate() {
         let line_data: Value = match serde_json::from_str(&contents?) {
@@ -158,7 +158,13 @@ fn stats_demo() -> Result<(BTreeMap<u64, u64>,  BTreeMap<u64, u64>, BTreeMap<u64
             black_near_maj_hist.insert(black_near_maj_count, near_maj_bin_count + 1);
 
             // Majority black seats + next greatest seat share.
-            let next_greatest_share = 2.0 * black_shares.clone().into_iter().filter(|s| *s < 0.5).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+            let next_greatest_share = 2.0
+                * black_shares
+                    .clone()
+                    .into_iter()
+                    .filter(|s| *s < 0.5)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .unwrap_or(0.0);
             let frac_bin = (1000.0 * (black_maj_count as f64 + next_greatest_share)).round() as u64;
             let frac_bin_count = match black_frac_maj_hist.get(&frac_bin) {
                 Some(c) => *c,
