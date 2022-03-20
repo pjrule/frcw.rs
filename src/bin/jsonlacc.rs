@@ -1,4 +1,3 @@
-//! Main CLI for GerryQL.
 use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -43,10 +42,13 @@ fn main() {
 
     let mut districts = Districts::new();
 
-    let stdout = std::io::stdout();
-    let mut writer = std::io::BufWriter::with_capacity(usize::pow(2, 24), stdout.lock());
+    let stdin = std::io::stdin();
+    let reader = std::io::BufReader::with_capacity(usize::pow(2, 24), stdin);
 
-    for (line, input) in io::stdin().lock().lines().enumerate() {
+    let stdout = std::io::stdout();
+    let mut writer = std::io::BufWriter::with_capacity(usize::pow(2, 24), stdout);
+
+    for (line, input) in reader.lines().enumerate() {
         let contents = match input {
             Ok(content) => content,
             Err(_) => {
@@ -85,7 +87,7 @@ fn main() {
         }
 
         if districts.dist_stats.len() != 0 {
-            serde_json::to_writer(&mut writer, (&districts));
+            serde_json::to_writer(&mut writer, &districts);
             // writer.write(
             //     &jq_query.run(
             //         &serde_json::to_string(&districts)
