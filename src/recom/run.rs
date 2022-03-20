@@ -361,6 +361,9 @@ pub fn multi_chain(
                         loops -= 1;
                     } else {
                         // Case: accepted proposal (update worker thread state).
+                        if proposals.len() == 0 {
+                            panic!("FATAL: Unreachable state in sampler (no proposals left).");
+                        }
                         let proposal = &proposals[rng.gen_range(0..proposals.len())];
                         for job in job_sends.iter() {
                             next_batch(job, Some(proposal.clone()), batch_size);

@@ -174,6 +174,12 @@ fn cut_edge_dist_pair(
     rng: &mut SmallRng,
 ) -> (usize, usize) {
     let cut_edges = partition.cut_edges(&graph);
+    if cut_edges.len() == 0 {
+        panic!(
+            "FATAL: No cut edges available. Something has gone terribly wrong. assignment: {:?}",
+            partition.assignments
+        );
+    }
     let cut_edge_idx = rng.gen_range(0..cut_edges.len()) as usize;
     let edge_idx = cut_edges[cut_edge_idx] as usize;
     let dist_a = partition.assignments[graph.edges[edge_idx].0] as usize;

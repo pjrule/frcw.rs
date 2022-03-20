@@ -201,7 +201,8 @@ fn main() {
             .unwrap()
             .insert("region_weights".to_string(), json!(region_weights));
     }
-    if writer_str != "pcompress" { // hotfix for pcompress writing
+    if writer_str != "pcompress" {
+        // hotfix for pcompress writing
         // TODO: move this into init
         println!("{}", json!({ "meta": meta }).to_string());
     }
