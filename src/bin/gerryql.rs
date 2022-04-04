@@ -5,11 +5,13 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{value_t, App, Arg};
 use frcw::init::graph_from_networkx;
+use petgraph::dot::Dot;
 use petgraph::graph::{Graph, NodeIndex};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, BufRead};
+use std::io::{self, stdin, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -39,141 +41,22 @@ fn main() {
                 .help("The number of threads to use."),
         );
     let matches = cli.get_matches();
-    /*
-    let n_threads = value_t!(matches.value_of("n_threads"), usize).unwrap_or_else(|e| e.exit());
-    let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap()))
-        .unwrap()
-        .into_os_string()
-        .into_string()
-        .unwrap();
-    let chain_data_path =
-        fs::canonicalize(PathBuf::from(matches.value_of("chain_data").unwrap())).unwrap();
-    */
-    let (black_maj_hist, black_near_maj_hist, black_frac_maj_hist) = stats_demo().unwrap();
-    println!("--black ≥50%--");
-    println!("val,freq");
-    for (val, freq) in black_maj_hist.iter() {
-        println!("{},{}", val, freq);
-    }
-    println!("--black ≥40%--");
-    println!("val,freq");
-    for (val, freq) in black_near_maj_hist.iter() {
-        println!("{},{}", val, freq);
-    }
-    println!("--black ≥50% + next highest scaled share--");
-    println!("val,freq");
-    for (val, freq) in black_frac_maj_hist.iter() {
-        println!("{:.3},{}", *val as f64 / 1000.0 as f64, freq);
-    }
 
-    //let (graph, _) = graph_from_networkx(&graph_json, pop_col, vec![]).unwrap();
-}
-
-/// Hardcoded stats from stdin (will be replaced later).
-fn stats_demo() -> Result<(BTreeMap<u64, u64>, BTreeMap<u64, u64>, BTreeMap<u64, u64>), io::Error> {
-    let bpop_col = "BPOP20";
-    let mut started = false;
-    let mut pops = Vec::<u64>::new();
-    let mut bpops = Vec::<u64>::new();
-    let mut black_shares = Vec::<f64>::new();
-    let mut black_near_maj_hist = BTreeMap::<u64, u64>::new();
-    let mut black_frac_maj_hist = BTreeMap::<u64, u64>::new(); // scaled by 1000
-    let mut black_maj_hist = BTreeMap::<u64, u64>::new();
-    for (line, contents) in io::stdin().lock().lines().enumerate() {
-        let line_data: Value = match serde_json::from_str(&contents?) {
-            Ok(data) => data,
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Could not parse line {} as JSON", line),
-                ))
-            }
-        };
-        if let Some(init_data) = line_data.get("init") {
-            if started {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Double initialization on line {}", line),
-                ));
-            }
-            let pop_data = init_data.as_object().unwrap()["populations"]
-                .as_array()
-                .unwrap();
-            let bpop_data = init_data.as_object().unwrap()["sums"].as_object().unwrap()[bpop_col]
-                .as_array()
-                .unwrap();
-            pops = pop_data.iter().map(|c| c.as_u64().unwrap()).collect();
-            bpops = bpop_data.iter().map(|c| c.as_u64().unwrap()).collect();
-            black_shares = pops
-                .iter()
-                .zip(bpops.iter())
-                .map(|(p, bp)| *bp as f64 / *p as f64)
-                .collect();
-            started = true;
-        }
-        if let Some(step_data) = line_data.get("step") {
-            if !started {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Step before initialization on line {}", line),
-                ));
-            }
-            let dists: Vec<usize> = step_data["dists"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|d| d.as_u64().unwrap() as usize)
-                .collect();
-            let step_pops: Vec<u64> = step_data["populations"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|d| d.as_u64().unwrap())
-                .collect();
-            let step_bpops: Vec<u64> = step_data["sums"].as_object().unwrap()[bpop_col]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|c| c.as_u64().unwrap())
-                .collect();
-            for ((dist, pop), bpop) in dists.iter().zip(step_pops.iter()).zip(step_bpops.iter()) {
-                pops[*dist] = *pop;
-                bpops[*dist] = *bpop;
-                black_shares[*dist] = *bpop as f64 / *pop as f64;
-            }
-            // Majority black seats.
-            let black_maj_count = black_shares.iter().filter(|s| **s >= 0.5).count() as u64;
-            let maj_bin_count = match black_maj_hist.get(&black_maj_count) {
-                Some(c) => *c,
-                None => 0,
-            };
-            black_maj_hist.insert(black_maj_count, maj_bin_count + 1);
-
-            // >40% black seats.
-            let black_near_maj_count = black_shares.iter().filter(|s| **s >= 0.4).count() as u64;
-            let near_maj_bin_count = match black_near_maj_hist.get(&black_near_maj_count) {
-                Some(c) => *c,
-                None => 0,
-            };
-            black_near_maj_hist.insert(black_near_maj_count, near_maj_bin_count + 1);
-
-            // Majority black seats + next greatest seat share.
-            let next_greatest_share = 2.0
-                * black_shares
-                    .clone()
-                    .into_iter()
-                    .filter(|s| *s < 0.5)
-                    .max_by(|a, b| a.partial_cmp(b).unwrap())
-                    .unwrap_or(0.0);
-            let frac_bin = (1000.0 * (black_maj_count as f64 + next_greatest_share)).round() as u64;
-            let frac_bin_count = match black_frac_maj_hist.get(&frac_bin) {
-                Some(c) => *c,
-                None => 0,
-            };
-            black_frac_maj_hist.insert(frac_bin, frac_bin_count + 1);
+    loop {
+        print!("> ");
+        let _ = io::stdout().flush();
+        let mut buffer = String::new();
+        let _ = io::stdin().read_line(&mut buffer);
+        let expr = parse_expr(buffer);
+        match expr {
+            Err(e) => println!("cannot parse expression: {:?}", e),
+            //Ok(expr) => println!("expression: {}", expr)
+            Ok(expr) => println!(
+                "expression as compute graph: {}",
+                Dot::new(&expr_to_graph(&expr))
+            ),
         }
     }
-    Ok((black_maj_hist, black_near_maj_hist, black_frac_maj_hist))
 }
 
 /// GerryQL basis functions.
@@ -200,6 +83,33 @@ enum QLPrimitive {
     Not,
 }
 
+impl fmt::Display for QLPrimitive {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let token = match self {
+            QLPrimitive::Add => "+",
+            QLPrimitive::Sub => "-",
+            QLPrimitive::Mult => "*",
+            QLPrimitive::Divide => "/",
+            QLPrimitive::Sort => "sort",
+            QLPrimitive::Sum => "sum",
+            QLPrimitive::Min => "min",
+            QLPrimitive::Max => "max",
+            QLPrimitive::Median => "median",
+            QLPrimitive::Mode => "mode",
+            QLPrimitive::Mean => "mean",
+            QLPrimitive::Eq => "=",
+            QLPrimitive::Gt => ">",
+            QLPrimitive::Geq => ">=",
+            QLPrimitive::Lt => "<",
+            QLPrimitive::Leq => "<=",
+            QLPrimitive::And => "and",
+            QLPrimitive::Or => "or",
+            QLPrimitive::Not => "not",
+        };
+        write!(f, "{}", token)
+    }
+}
+
 /// Kinds of primitive GerryQL
 #[derive(Copy, Clone, PartialEq, Debug)]
 enum QLPrimitiveKind {
@@ -216,8 +126,32 @@ enum QLExpr {
     Bool(bool),
     Int(i64),
     Float(f64),
-    PrimitiveCall(QLPrimitive, Vec<QLExpr>),
+    Var(String),
     Column(String),
+    Primitive(QLPrimitive),
+    Lambda(Vec<String>, Box<QLExpr>),
+    Apply(Box<QLExpr>, Vec<QLExpr>),
+}
+
+impl fmt::Display for QLExpr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let expr = match self {
+            QLExpr::Bool(b) => format!("{}", b),
+            QLExpr::Int(i) => format!("{}", i),
+            QLExpr::Float(f) => format!("{}", f),
+            QLExpr::Column(c) => c.to_string(),
+            QLExpr::Primitive(prim) => format!("{}", prim),
+            QLExpr::Var(v) => v.to_string(),
+            // TODO: format non-implicit args.
+            QLExpr::Lambda(_, body) => format!("#({})", body),
+            QLExpr::Apply(expr, args) => {
+                let arg_fmts: Vec<String> = args.iter().map(|arg| format!("{}", arg)).collect();
+                let args_formatted = arg_fmts.join(" ");
+                format!("({} {})", expr, args_formatted)
+            }
+        };
+        write!(f, "{}", expr)
+    }
 }
 
 /// GerryQL values.
@@ -235,26 +169,25 @@ enum QLValue {
 #[derive(Clone, PartialEq, Debug)]
 enum QLError {
     UnexpectedEOF,
-    MissingOpenParen,
-    ExtraCloseParen,
+    UnmatchedParens,
     ExtraChars,
-    ExpectedFuncName,
     UnreachableState,
+    AppliedNonFunction,
     BadToken(String),
-    TooFewArguments(QLPrimitive),
-    TooManyArguments(QLPrimitive),
 }
 
 //// Parsed GerryQL tokens.
 #[derive(Clone, PartialEq, Debug)]
 enum QLToken {
-    StartCall,
-    EndCall,
+    StartLambda,
+    Start,
+    End,
     BoolLiteral(bool),
     IntLiteral(i64),
     FloatLiteral(f64),
     ColumnLiteral(String),
     PrimitiveName(QLPrimitive),
+    Name(String),
     Unknown,
 }
 
@@ -336,13 +269,14 @@ fn parse_token(token: &str) -> QLToken {
         }
     }
     match token {
-        "(" => QLToken::StartCall,
-        "[" => QLToken::StartCall,
-        ")" => QLToken::EndCall,
-        "]" => QLToken::EndCall,
+        "(" => QLToken::Start,
+        "[" => QLToken::Start,
+        ")" => QLToken::End,
+        "]" => QLToken::End,
+        "#" => QLToken::StartLambda,
         "true" => QLToken::BoolLiteral(true),
         "false" => QLToken::BoolLiteral(false),
-        _ => QLToken::Unknown,
+        name => QLToken::Name(name.to_string()), // TODO: what names are allowable?
     }
 }
 
@@ -352,43 +286,59 @@ fn parse_next_expr(tokens: &[String]) -> Result<(QLExpr, &[String]), QLError> {
     }
     let token = &tokens[0];
     let tt = parse_token(&token);
-    if tt == QLToken::StartCall {
+    if tt == QLToken::StartLambda {
         // We expect at least three tokens in the stream:
-        // [open] [primitive name] [close]
+        // [open lambda] [open] [something] [close]
+        if tokens.len() < 4 {
+            return Err(QLError::UnexpectedEOF);
+        }
+        if parse_token(&tokens[1]) != QLToken::Start {
+            return Err(QLError::BadToken(tokens[1].to_owned()));
+        }
+        let (body, rest) = parse_next_expr(&tokens[2..])?;
+        if rest.is_empty() {
+            return Err(QLError::UnexpectedEOF);
+        }
+        let end_token = parse_token(&rest[0]);
+        if end_token != QLToken::End {
+            return Err(QLError::BadToken(rest[0].to_owned()));
+        }
+        // TODO: allow arguments!
+        return Ok((QLExpr::Lambda(vec![], Box::new(body)), &rest[1..]));
+    } else if tt == QLToken::Start {
+        // We expect at least three tokens in the stream:
+        // [open] [something] [close]
         if tokens.len() < 3 {
             return Err(QLError::UnexpectedEOF);
         }
-        if let Some(prim) = token_to_primitive(&tokens[1]) {
-            // Each primitive takes at least one argument; some
-            // may take two.
-            let mut args: Vec<QLExpr> = vec![];
-            let (arg1, mut rest) = match parse_next_expr(&tokens[2..]) {
-                Ok(res) => res,
-                Err(QLError::UnexpectedEOF) => return Err(QLError::TooFewArguments(prim)),
-                Err(e) => return Err(e),
-            };
-            args.push(arg1);
-            if primitive_kind(prim) == QLPrimitiveKind::Binary
-                || primitive_kind(prim) == QLPrimitiveKind::Cmp
-            {
-                let (arg2, rest2) = match parse_next_expr(rest) {
-                    Ok(res) => res,
-                    Err(QLError::UnexpectedEOF) => return Err(QLError::TooFewArguments(prim)),
-                    Err(e) => return Err(e),
-                };
-                args.push(arg2);
-                rest = rest2;
+        let (applied, mut rest) = parse_next_expr(&tokens[1..])?;
+        match applied {
+            QLExpr::Primitive(_) => (),
+            QLExpr::Var(_) => (),
+            QLExpr::Lambda(_, _) => (),
+            _ => return Err(QLError::AppliedNonFunction),
+        };
+
+        let mut args: Vec<QLExpr> = vec![];
+        while !rest.is_empty() {
+            let next_token = parse_token(&rest[0]);
+            if next_token == QLToken::End {
+                // Done reading arguments.
+                break;
             }
-            if rest.len() > 0 && parse_token(&rest[0]) != QLToken::EndCall {
-                return Err(QLError::TooManyArguments(prim));
-            }
-            if rest.len() == 0 {
-                return Err(QLError::UnexpectedEOF);
-            }
-            return Ok((QLExpr::PrimitiveCall(prim, args), &rest[1..]));
-        } else {
-            return Err(QLError::ExpectedFuncName);
+            let (arg, next_rest) = parse_next_expr(rest)?;
+            rest = next_rest;
+            args.push(arg);
         }
+
+        if rest.is_empty() {
+            return Err(QLError::UnexpectedEOF);
+        }
+        let end_token = parse_token(&rest[0]);
+        if end_token != QLToken::End {
+            return Err(QLError::BadToken(rest[0].to_owned()));
+        }
+        return Ok((QLExpr::Apply(Box::new(applied), args), &rest[1..]));
     }
 
     let rest = &tokens[1..];
@@ -397,9 +347,10 @@ fn parse_next_expr(tokens: &[String]) -> Result<(QLExpr, &[String]), QLError> {
         QLToken::FloatLiteral(val) => Ok((QLExpr::Float(val), rest)),
         QLToken::IntLiteral(val) => Ok((QLExpr::Int(val), rest)),
         QLToken::ColumnLiteral(val) => Ok((QLExpr::Column(val), rest)),
-        QLToken::EndCall => Err(QLError::UnexpectedEOF),
+        QLToken::PrimitiveName(prim) => Ok((QLExpr::Primitive(prim), rest)),
+        QLToken::Name(name) => Ok((QLExpr::Var(name), rest)),
+        QLToken::End => Err(QLError::UnexpectedEOF),
         QLToken::Unknown => Err(QLError::BadToken(token.to_owned())),
-        QLToken::PrimitiveName(_) => Err(QLError::MissingOpenParen),
         _ => Err(QLError::UnreachableState),
     }
 }
@@ -411,7 +362,11 @@ fn parse_expr(raw_expr: String) -> Result<QLExpr, QLError> {
         Err(e) => Err(e),
         Ok((exp, rest)) => {
             if rest.len() > 0 {
-                Err(QLError::ExtraChars)
+                if rest.iter().all(|t| parse_token(t) == QLToken::End) {
+                    Err(QLError::UnmatchedParens)
+                } else {
+                    Err(QLError::ExtraChars)
+                }
             } else {
                 Ok(exp)
             }
@@ -423,7 +378,20 @@ fn parse_expr(raw_expr: String) -> Result<QLExpr, QLError> {
 enum QLNodeKind {
     Primitive(QLPrimitive),
     Constant,
+    NotImplementedYet,
     Column(String),
+}
+
+impl fmt::Display for QLNodeKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let kind = match self {
+            QLNodeKind::Primitive(prim) => format!("primitive fn ({})", prim),
+            QLNodeKind::Constant => "constant".to_string(),
+            QLNodeKind::NotImplementedYet => "???".to_string(),
+            QLNodeKind::Column(col) => format!("column data ({})", col),
+        };
+        write!(f, "{}", kind)
+    }
 }
 
 /// How should a computation's value be updated?
@@ -440,9 +408,21 @@ enum QLUpdate {
 
 /// A node in a GerryQL expression's computation/dependency graph.
 struct QLComputeNode {
+    /// The kind of the compute node.
     kind: QLNodeKind,
+    /// How the compute node should be updated.
     update: QLUpdate,
+    /// The compute node's cached value.
     value: Option<QLValue>,
+    /// The hash of the expression that the compute node is the
+    /// root of. The container is responsible for handling collisions.
+    expr_hash: u64,
+}
+
+impl fmt::Display for QLComputeNode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
 }
 
 /// Edges in the dependency graphs are labeled with argument IDs.
@@ -451,6 +431,13 @@ type QLComputeEdge = usize;
 type QLComputeGraph = Graph<QLComputeNode, QLComputeEdge>;
 
 /// Generates a computation graph from a GerryQL expression.
+fn expr_to_graph(expr: &QLExpr) -> QLComputeGraph {
+    let mut graph = QLComputeGraph::new();
+    expr_to_node(expr, &mut graph, None, None);
+    graph
+}
+
+/// Recursively builds a computation graph from a GerryQL expression.
 fn expr_to_node(
     expr: &QLExpr,
     graph: &mut QLComputeGraph,
@@ -470,15 +457,19 @@ fn expr_to_node(
             Some(QLValue::Float(v.to_owned())),
             None,
         ),
-        QLExpr::PrimitiveCall(prim, args) => {
-            (QLNodeKind::Primitive(prim.to_owned()), None, Some(args))
-        }
+        QLExpr::Apply(exp, args) => match **exp {
+            QLExpr::Primitive(prim) => (QLNodeKind::Primitive(prim.to_owned()), None, Some(args)),
+            _ => (QLNodeKind::NotImplementedYet, None, Some(args)),
+        },
         QLExpr::Column(col) => (QLNodeKind::Column(col.to_owned()), None, None),
+        // TODO
+        _ => (QLNodeKind::NotImplementedYet, None, None),
     };
     let node_idx = graph.add_node(QLComputeNode {
         kind: kind,
         value: value,
         update: QLUpdate::All, // Be conservative initially.
+        expr_hash: 0,          // TODO
     });
 
     // Add a dependency edge from the new node to the parent, if there's
@@ -493,11 +484,14 @@ fn expr_to_node(
             expr_to_node(dep, graph, Some(node_idx), Some(dep_id));
         }
     }
-
-    //
 }
 
-// _column_sums: &BTreeMap<String, Vec<u32>>
+/// Fills in all values in a computation graph.
+/*
+fn fill_graph(graph: &mut QLComputeGraph, column_sums: &BTreeMap<String, Vec<u32>>) {
+
+}
+*/
 
 #[cfg(test)]
 mod tests {
@@ -547,10 +541,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_expr_column_literal_invalid() {
+    fn test_parse_expr_var() {
         assert_eq!(
-            parse_expr(".".to_string()), // can't have empty column name
-            Err(QLError::BadToken(".".to_string()))
+            parse_expr("abc".to_string()),
+            Ok(QLExpr::Var("abc".to_string()))
+        )
+    }
+
+    #[test]
+    fn test_parse_expr_primitive() {
+        assert_eq!(
+            parse_expr("+".to_string()),
+            Ok(QLExpr::Primitive(QLPrimitive::Add))
         )
     }
 
@@ -558,8 +560,8 @@ mod tests {
     fn test_parse_expr_add_two_ints() {
         assert_eq!(
             parse_expr("(+ 1 2)".to_string()),
-            Ok(QLExpr::PrimitiveCall(
-                QLPrimitive::Add,
+            Ok(QLExpr::Apply(
+                Box::new(QLExpr::Primitive(QLPrimitive::Add)),
                 vec![QLExpr::Int(1), QLExpr::Int(2)]
             ))
         )
@@ -569,8 +571,8 @@ mod tests {
     fn test_parse_expr_add_two_floats() {
         assert_eq!(
             parse_expr("(+ 1.0 2.0)".to_string()),
-            Ok(QLExpr::PrimitiveCall(
-                QLPrimitive::Add,
+            Ok(QLExpr::Apply(
+                Box::new(QLExpr::Primitive(QLPrimitive::Add)),
                 vec![QLExpr::Float(1.0), QLExpr::Float(2.0)]
             ))
         )
@@ -580,8 +582,8 @@ mod tests {
     fn test_parse_expr_add_two_columns() {
         assert_eq!(
             parse_expr("(+ .BPOP .TOTPOP)".to_string()),
-            Ok(QLExpr::PrimitiveCall(
-                QLPrimitive::Add,
+            Ok(QLExpr::Apply(
+                Box::new(QLExpr::Primitive(QLPrimitive::Add)),
                 vec![
                     QLExpr::Column(".BPOP".to_string()),
                     QLExpr::Column(".TOTPOP".to_string())
@@ -591,33 +593,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_expr_add_one_arg() {
-        assert_eq!(
-            parse_expr("(+ 1)".to_string()),
-            Err(QLError::TooFewArguments(QLPrimitive::Add))
-        )
-    }
-
-    #[test]
-    fn test_parse_expr_add_three_arg() {
-        assert_eq!(
-            parse_expr("(+ 1 2 3)".to_string()),
-            Err(QLError::TooManyArguments(QLPrimitive::Add))
-        )
-    }
-
-    #[test]
     fn test_parse_expr_add_nested_expr() {
         assert_eq!(
             parse_expr("(+ (+ (+ .BPOP .TOTPOP) 1.0) 2)".to_string()),
-            Ok(QLExpr::PrimitiveCall(
-                QLPrimitive::Add,
+            Ok(QLExpr::Apply(
+                Box::new(QLExpr::Primitive(QLPrimitive::Add)),
                 vec![
-                    QLExpr::PrimitiveCall(
-                        QLPrimitive::Add,
+                    QLExpr::Apply(
+                        Box::new(QLExpr::Primitive(QLPrimitive::Add)),
                         vec![
-                            QLExpr::PrimitiveCall(
-                                QLPrimitive::Add,
+                            QLExpr::Apply(
+                                Box::new(QLExpr::Primitive(QLPrimitive::Add)),
                                 vec![
                                     QLExpr::Column(".BPOP".to_string()),
                                     QLExpr::Column(".TOTPOP".to_string())
@@ -633,18 +619,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_expr_unknown_function_name() {
-        assert_eq!(
-            parse_expr("(1)".to_string()),
-            Err(QLError::ExpectedFuncName),
-        )
-    }
-
-    #[test]
     fn test_parse_expr_missing_open_paren() {
         assert_eq!(
             parse_expr("+ 1 2)".to_string()),
-            Err(QLError::MissingOpenParen),
+            // TODO: better error here?
+            Err(QLError::ExtraChars),
         )
     }
 
@@ -658,14 +637,28 @@ mod tests {
     fn test_parse_expr_extra_close_paren() {
         assert_eq!(
             parse_expr("(+ 1 2))".to_string()),
-            Err(QLError::ExtraCloseParen),
+            Err(QLError::UnmatchedParens),
         )
     }
 
     fn test_parse_expr_extra_close_parens() {
         assert_eq!(
             parse_expr("(+ 1 2)))".to_string()),
-            Err(QLError::ExtraCloseParen),
+            Err(QLError::ExtraChars),
+        )
+    }
+
+    fn test_parse_expr_extra_expr() {
+        assert_eq!(
+            parse_expr("(+ 1 2) (+ 1 2)".to_string()),
+            Err(QLError::ExtraChars),
+        )
+    }
+
+    fn test_parse_expr_applied_non_function() {
+        assert_eq!(
+            parse_expr("((+ 1 2))".to_string()),
+            Err(QLError::AppliedNonFunction),
         )
     }
 }
