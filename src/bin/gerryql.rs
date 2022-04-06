@@ -5,8 +5,13 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{value_t, App, Arg};
 use frcw::init::graph_from_networkx;
+use ndarray::prelude::*;
+use ndarray::{Array, Array1};
+use petgraph::algo::toposort;
 use petgraph::dot::Dot;
 use petgraph::graph::{Graph, NodeIndex};
+use petgraph::visit::EdgeRef;
+use petgraph::Direction;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -51,10 +56,14 @@ fn main() {
         match expr {
             Err(e) => println!("cannot parse expression: {:?}", e),
             //Ok(expr) => println!("expression: {}", expr)
-            Ok(expr) => println!(
-                "expression as compute graph: {}",
-                Dot::new(&expr_to_graph(&expr))
-            ),
+            Ok(expr) => {
+                let (mut comp_graph, root) = expr_to_graph(&expr);
+                let order = update_order(&comp_graph).unwrap();
+                match eval_graph(&mut comp_graph, &order, &BTreeMap::new(), &vec![]) {
+                    Ok(_) => println!("{}", fmt_node_value(&comp_graph[root].value)),
+                    Err(e) => println!("evaluation error: {}", e),
+                };
+            }
         }
     }
 }
@@ -66,6 +75,7 @@ enum QLPrimitive {
     Sub,
     Mult,
     Divide,
+    // TODO: IntDivide, Mod, Dot
     Sort,
     Sum,
     Min,
@@ -81,6 +91,7 @@ enum QLPrimitive {
     And,
     Or,
     Not,
+    Zeros,
 }
 
 impl fmt::Display for QLPrimitive {
@@ -105,6 +116,7 @@ impl fmt::Display for QLPrimitive {
             QLPrimitive::And => "and",
             QLPrimitive::Or => "or",
             QLPrimitive::Not => "not",
+            QLPrimitive::Zeros => "zeros",
         };
         write!(f, "{}", token)
     }
@@ -124,8 +136,8 @@ enum QLPrimitiveKind {
 #[derive(Clone, PartialEq, Debug)]
 enum QLExpr {
     Bool(bool),
-    Int(i64),
-    Float(f64),
+    Int(Int),
+    Float(Float),
     Var(String),
     Column(String),
     Primitive(QLPrimitive),
@@ -154,15 +166,26 @@ impl fmt::Display for QLExpr {
     }
 }
 
+/// Integer type used in interpreter.
+type Int = i64;
+/// Float type used in interpreter.
+type Float = f64;
+/// Integer array type used in interpreter.
+type IntArray = Array1<Int>;
+/// Float array type used in interpreter.
+type FloatArray = Array1<Float>;
+/// Bool array type used in interpreter.
+type BoolArray = Array1<bool>;
+
 /// GerryQL values.
 #[derive(Clone, PartialEq, Debug)]
 enum QLValue {
     Bool(bool),
-    Int(i64),
-    Float(f64),
-    VecBool(Vec<bool>),
-    VecInt(Vec<i64>),
-    VecFloat(Vec<f64>),
+    Int(Int),
+    Float(Float),
+    BoolArray(BoolArray),
+    IntArray(IntArray),
+    FloatArray(FloatArray),
 }
 
 /// GerryQL errors.
@@ -183,8 +206,8 @@ enum QLToken {
     Start,
     End,
     BoolLiteral(bool),
-    IntLiteral(i64),
-    FloatLiteral(f64),
+    IntLiteral(Int),
+    FloatLiteral(Float),
     ColumnLiteral(String),
     PrimitiveName(QLPrimitive),
     Name(String),
@@ -224,6 +247,7 @@ fn token_to_primitive(token: &str) -> Option<QLPrimitive> {
         "and" => Some(QLPrimitive::And),
         "or" => Some(QLPrimitive::Or),
         "not" => Some(QLPrimitive::Not),
+        "zeros" => Some(QLPrimitive::Zeros),
         _ => None,
     }
 }
@@ -250,6 +274,7 @@ fn primitive_kind(prim: QLPrimitive) -> QLPrimitiveKind {
         QLPrimitive::And => QLPrimitiveKind::Binary,
         QLPrimitive::Or => QLPrimitiveKind::Binary,
         QLPrimitive::Not => QLPrimitiveKind::Unary,
+        QLPrimitive::Zeros => QLPrimitiveKind::Unary,
     }
 }
 
@@ -257,10 +282,10 @@ fn parse_token(token: &str) -> QLToken {
     if let Some(prim) = token_to_primitive(token) {
         return QLToken::PrimitiveName(prim);
     }
-    if let Ok(val) = token.parse::<i64>() {
+    if let Ok(val) = token.parse::<Int>() {
         return QLToken::IntLiteral(val);
     }
-    if let Ok(val) = token.parse::<f64>() {
+    if let Ok(val) = token.parse::<Float>() {
         return QLToken::FloatLiteral(val);
     }
     if token.len() > 1 {
@@ -375,6 +400,7 @@ fn parse_expr(raw_expr: String) -> Result<QLExpr, QLError> {
 }
 
 /// What kind of computation does the data flow graph represent?
+#[derive(Clone, PartialEq)]
 enum QLNodeKind {
     Primitive(QLPrimitive),
     Constant,
@@ -395,6 +421,7 @@ impl fmt::Display for QLNodeKind {
 }
 
 /// How should a computation's value be updated?
+#[derive(Clone)]
 enum QLUpdate {
     /// Any time a tracked property of a districting plan changes,
     /// update the whole node.
@@ -407,6 +434,7 @@ enum QLUpdate {
 }
 
 /// A node in a GerryQL expression's computation/dependency graph.
+#[derive(Clone)]
 struct QLComputeNode {
     /// The kind of the compute node.
     kind: QLNodeKind,
@@ -419,9 +447,21 @@ struct QLComputeNode {
     expr_hash: u64,
 }
 
+fn fmt_node_value(val: &Option<QLValue>) -> String {
+    match val {
+        None => "()".to_string(),
+        Some(QLValue::Int(v)) => format!("{} : int", v),
+        Some(QLValue::Bool(v)) => format!("{} : bool", v),
+        Some(QLValue::Float(v)) => format!("{} : float", v),
+        Some(QLValue::IntArray(v)) => format!("{} : int[{}]", v, v.len()),
+        Some(QLValue::BoolArray(v)) => format!("{} : bool[{}]", v, v.len()),
+        Some(QLValue::FloatArray(v)) => format!("{} : float[{}]", v, v.len()),
+    }
+}
+
 impl fmt::Display for QLComputeNode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.kind)
+        write!(f, "{} (val = {:?})", self.kind, fmt_node_value(&self.value))
     }
 }
 
@@ -431,10 +471,13 @@ type QLComputeEdge = usize;
 type QLComputeGraph = Graph<QLComputeNode, QLComputeEdge>;
 
 /// Generates a computation graph from a GerryQL expression.
-fn expr_to_graph(expr: &QLExpr) -> QLComputeGraph {
+///
+/// Returns the compute graph and the index of the node corresponding
+/// to the expression.
+fn expr_to_graph(expr: &QLExpr) -> (QLComputeGraph, NodeIndex) {
     let mut graph = QLComputeGraph::new();
-    expr_to_node(expr, &mut graph, None, None);
-    graph
+    let node_idx = expr_to_node(expr, &mut graph, None, None);
+    (graph, node_idx)
 }
 
 /// Recursively builds a computation graph from a GerryQL expression.
@@ -443,7 +486,7 @@ fn expr_to_node(
     graph: &mut QLComputeGraph,
     parent: Option<NodeIndex>,
     child_id: Option<QLComputeEdge>,
-) {
+) -> NodeIndex {
     // Convert the expression to compute graph metadata.
     let (kind, value, deps) = match expr {
         QLExpr::Bool(v) => (
@@ -484,14 +527,480 @@ fn expr_to_node(
             expr_to_node(dep, graph, Some(node_idx), Some(dep_id));
         }
     }
+    node_idx
+}
+
+/// Evaluates a primitive function call.
+fn eval_primitive(prim: QLPrimitive, args: &[QLComputeNode]) {
+    let kind = primitive_kind(prim);
+}
+
+/// Coerces a boolean to a float, matching Python semantics.
+fn bool_to_float(v: bool) -> Float {
+    match v {
+        false => 0.0,
+        true => 1.0,
+    }
+}
+
+macro_rules! shape_check {
+    ($lhs:expr, $rhs:expr, $op:expr, $out:expr) => {{
+        let lhs_shape = $lhs.shape();
+        let rhs_shape = $rhs.shape();
+        if lhs_shape == rhs_shape {
+            Ok($out($op($lhs, $rhs)))
+        } else {
+            // TODO: multidimensional arrays?
+            Err(format!(
+                "operands could not be broadcast together with lengths {}, {}",
+                lhs_shape[0], rhs_shape[0]
+            ))
+        }
+    }};
+}
+
+macro_rules! bin_broadcast_op {
+    ($lhs:expr, $rhs:expr, $op:expr) => {
+        match ($lhs, $rhs) {
+            // int * X
+            (Some(QLValue::Int(l)), Some(QLValue::Int(r))) => Ok(QLValue::Int($op(l, r))),
+            (Some(QLValue::Int(l)), Some(QLValue::Bool(r))) => Ok(QLValue::Int($op(l, *r as Int))),
+            (Some(QLValue::Int(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::Float($op(*l as Float, r)))
+            }
+            (Some(QLValue::Int(l)), Some(QLValue::IntArray(r))) => {
+                Ok(QLValue::IntArray($op(*l, r)))
+            }
+            (Some(QLValue::Int(l)), Some(QLValue::BoolArray(r))) => {
+                Ok(QLValue::IntArray(r.map(|v| $op(l, *v as Int))))
+            }
+            (Some(QLValue::Int(l)), Some(QLValue::FloatArray(r))) => {
+                Ok(QLValue::FloatArray(r.map(|v| $op(*l as Float, *v))))
+            }
+            // bool * X
+            (Some(QLValue::Bool(l)), Some(QLValue::Int(r))) => Ok(QLValue::Int($op(*l as Int, r))),
+            (Some(QLValue::Bool(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::Int($op(*l as Int, *r as Int)))
+            }
+            (Some(QLValue::Bool(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::Float($op(bool_to_float(*l), r)))
+            }
+            (Some(QLValue::Bool(l)), Some(QLValue::IntArray(r))) => {
+                Ok(QLValue::IntArray($op(*l as Int, r)))
+            }
+            (Some(QLValue::Bool(l)), Some(QLValue::BoolArray(r))) => {
+                Ok(QLValue::IntArray(r.map(|v| $op(*l as Int, *v as Int))))
+            }
+            (Some(QLValue::Bool(l)), Some(QLValue::FloatArray(r))) => {
+                Ok(QLValue::FloatArray($op(bool_to_float(*l), r)))
+            }
+            // float * X
+            (Some(QLValue::Float(l)), Some(QLValue::Int(r))) => {
+                Ok(QLValue::Float($op(l, *r as Float)))
+            }
+            (Some(QLValue::Float(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::Float($op(l, bool_to_float(*r))))
+            }
+            (Some(QLValue::Float(l)), Some(QLValue::Float(r))) => Ok(QLValue::Float($op(l, r))),
+            (Some(QLValue::Float(l)), Some(QLValue::IntArray(r))) => {
+                Ok(QLValue::FloatArray(r.map(|v| $op(l, *v as Float))))
+            }
+            (Some(QLValue::Float(l)), Some(QLValue::BoolArray(r))) => {
+                Ok(QLValue::FloatArray(r.map(|v| $op(l, bool_to_float(*v)))))
+            }
+            (Some(QLValue::Float(l)), Some(QLValue::FloatArray(r))) => {
+                Ok(QLValue::FloatArray($op(*l, r)))
+            }
+            // int array * X
+            (Some(QLValue::IntArray(l)), Some(QLValue::Int(r))) => {
+                Ok(QLValue::IntArray($op(l, *r)))
+            }
+            (Some(QLValue::IntArray(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::IntArray($op(l, *r as Int)))
+            }
+            (Some(QLValue::IntArray(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::FloatArray(l.map(|v| $op(*v as Float, r))))
+            }
+            (Some(QLValue::IntArray(l)), Some(QLValue::IntArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &IntArray, r: &IntArray| $op(l, r),
+                    QLValue::IntArray
+                )
+            }
+            (Some(QLValue::IntArray(l)), Some(QLValue::BoolArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &IntArray, r: &BoolArray| $op(l, r.map(|v| *v as Int)),
+                    QLValue::IntArray
+                )
+            }
+            (Some(QLValue::IntArray(l)), Some(QLValue::FloatArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &IntArray, r: &FloatArray| $op(l.map(|v| *v as Float), r),
+                    QLValue::FloatArray
+                )
+            }
+            // bool array * X
+            (Some(QLValue::BoolArray(l)), Some(QLValue::Int(r))) => {
+                Ok(QLValue::IntArray(l.map(|v| $op(*v as Int, r))))
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::IntArray(l.map(|v| $op(*v as Int, *r as Int))))
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::FloatArray(l.map(|v| $op(bool_to_float(*v), r))))
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::IntArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &BoolArray, r: &IntArray| $op(l.map(|v| *v as Int), r),
+                    QLValue::IntArray
+                )
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::BoolArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &BoolArray, r: &BoolArray| $op(l.map(|v| *v as Int), r.map(|v| *v as Int)),
+                    QLValue::IntArray
+                )
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::FloatArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &BoolArray, r: &FloatArray| $op(l.map(|v| bool_to_float(*v)), r),
+                    QLValue::FloatArray
+                )
+            }
+            // float array * X
+            (Some(QLValue::FloatArray(l)), Some(QLValue::Int(r))) => {
+                Ok(QLValue::FloatArray($op(l, *r as Float)))
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::FloatArray($op(l, bool_to_float(*r))))
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::FloatArray($op(l, *r)))
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::IntArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &FloatArray, r: &IntArray| $op(l, r.map(|v| *v as Float)),
+                    QLValue::FloatArray
+                )
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::BoolArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &FloatArray, r: &BoolArray| $op(l, r.map(|v| bool_to_float(*v)),),
+                    QLValue::FloatArray
+                )
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::FloatArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &FloatArray, r: &FloatArray| $op(l, r),
+                    QLValue::FloatArray
+                )
+            }
+            _ => unreachable!(),
+        }
+    };
+}
+
+macro_rules! cmp_broadcast_op {
+    ($lhs:expr, $rhs:expr, $op:expr) => {
+        match ($lhs, $rhs) {
+            // int * X
+            (Some(QLValue::Int(l)), Some(QLValue::Int(r))) => Ok(QLValue::Bool($op(*l, *r))),
+            (Some(QLValue::Int(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::Bool($op(*l, *r as Int)))
+            }
+            (Some(QLValue::Int(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::Bool($op(*l as Float, *r)))
+            }
+            (Some(QLValue::Int(l)), Some(QLValue::IntArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(*l, *v))))
+            }
+            (Some(QLValue::Int(l)), Some(QLValue::BoolArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(*l, *v as Int))))
+            }
+            (Some(QLValue::Int(l)), Some(QLValue::FloatArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(*l as Float, *v))))
+            }
+            // bool * X
+            (Some(QLValue::Bool(l)), Some(QLValue::Int(r))) => {
+                Ok(QLValue::Bool($op(*l as Int, *r)))
+            }
+            (Some(QLValue::Bool(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::Bool($op(*l as Int, *r as Int)))
+            }
+            (Some(QLValue::Bool(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::Bool($op(bool_to_float(*l), *r)))
+            }
+            (Some(QLValue::Bool(l)), Some(QLValue::IntArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(*l as Int, *v))))
+            }
+            (Some(QLValue::Bool(l)), Some(QLValue::BoolArray(r))) => Ok(QLValue::BoolArray(
+                r.map(|v| $op(*l as Int, *v as Int)),
+            )),
+            (Some(QLValue::Bool(l)), Some(QLValue::FloatArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(bool_to_float(*l), *v))))
+            }
+            // float * X
+            (Some(QLValue::Float(l)), Some(QLValue::Int(r))) => {
+                Ok(QLValue::Bool($op(*l, *r as Float)))
+            }
+            (Some(QLValue::Float(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::Bool($op(*l, bool_to_float(*r))))
+            }
+            (Some(QLValue::Float(l)), Some(QLValue::Float(r))) => Ok(QLValue::Bool($op(*l, *r))),
+            (Some(QLValue::Float(l)), Some(QLValue::IntArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(*l, *v as Float))))
+            }
+            (Some(QLValue::Float(l)), Some(QLValue::BoolArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(*l, bool_to_float(*v)))))
+            }
+            (Some(QLValue::Float(l)), Some(QLValue::FloatArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(*l, *v))))
+            }
+            // int array * X
+            (Some(QLValue::IntArray(l)), Some(QLValue::Int(r))) => {
+                Ok(QLValue::BoolArray(l.map(|v| $op(*v, *r))))
+            }
+            (Some(QLValue::IntArray(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::BoolArray(l.map(|v| $op(*v, *r as Int))))
+            }
+            (Some(QLValue::IntArray(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::BoolArray(l.map(|v| $op(*v as Float, *r))))
+            }
+            /*
+            (Some(QLValue::IntArray(l)), Some(QLValue::IntArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &IntArray, r: &IntArray| l.iter().zip(r.iter()).map(|(v1, v2)| $op(*v1, *v2)).collect(),
+                    QLValue::BoolArray
+                )
+            }
+            (Some(QLValue::IntArray(l)), Some(QLValue::BoolArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &IntArray, r: &BoolArray| l.iter().zip(r.iter()).map(|(v1, v2)| $op(*v1, *v2 as Int)).collect(),
+                    QLValue::BoolArray
+                )
+            }
+            (Some(QLValue::IntArray(l)), Some(QLValue::FloatArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &IntArray, r: &FloatArray| l.iter().zip(r.iter()).map(|(v1, v2)| $op(*v1 as Float, *v2)).collect(),
+                    QLValue::FloatArray
+                )
+            }
+            // bool array * X
+            (Some(QLValue::BoolArray(l)), Some(QLValue::Int(r))) => {
+                Ok(QLValue::IntArray(l.map(|v| $op(*v as Int, r))))
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::Bool(r))) => Ok(QLValue::IntArray(
+                l.map(|v| $op(*v as Int, *r as Int)),
+            )),
+            (Some(QLValue::BoolArray(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::FloatArray(l.map(|v| $op(bool_to_float(*v), r))))
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::IntArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &BoolArray, r: &IntArray| $op(l.map(|v| *v as Int), r),
+                    QLValue::IntArray
+                )
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::BoolArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &BoolArray, r: &BoolArray| $op(
+                        l.map(|v| *v as Int),
+                        r.map(|v| *v as Int)
+                    ),
+                    QLValue::IntArray
+                )
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::FloatArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &BoolArray, r: &FloatArray| $op(
+                        l.map(|v| bool_to_float(*v)),
+                        r
+                    ),
+                    QLValue::FloatArray
+                )
+            }
+            // float array * X
+            (Some(QLValue::FloatArray(l)), Some(QLValue::Int(r))) => {
+                Ok(QLValue::FloatArray($op(l, *r as Float)))
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::FloatArray($op(l, bool_to_float(*r))))
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::FloatArray($op(l, *r)))
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::IntArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &FloatArray, r: &IntArray| $op(
+                        l,
+                        r.map(|v| *v as Float)
+                    ),
+                    QLValue::FloatArray
+                )
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::BoolArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &FloatArray, r: &BoolArray| $op(
+                        l,
+                        r.map(|v| bool_to_float(*v)),
+                    ),
+                    QLValue::FloatArray
+                )
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::FloatArray(r))) => {
+                shape_check!(
+                    l,
+                    r,
+                    |l: &FloatArray, r: &FloatArray| $op(l, r),
+                    QLValue::FloatArray
+                )
+            }*/
+            _ => unreachable!(),
+        }
+    };
 }
 
 /// Fills in all values in a computation graph.
-/*
-fn fill_graph(graph: &mut QLComputeGraph, column_sums: &BTreeMap<String, Vec<u32>>) {
-
+fn eval_graph(
+    graph: &mut QLComputeGraph,
+    order: &[NodeIndex],
+    column_sums: &BTreeMap<String, Vec<u32>>,
+    dist_diff: &[usize],
+) -> Result<(), String> {
+    for &node_id in order.iter() {
+        match &graph[node_id].kind {
+            QLNodeKind::Column(col) => {
+                // Update the column sums cached in the compute graph.
+                let column_vals = column_sums.get(&col[1..]);
+                match column_vals {
+                    Some(vals) => {
+                        match &mut graph[node_id].value {
+                            None => {
+                                // Initialize an array in the graph for the column.
+                                graph[node_id].value = Some(QLValue::IntArray(Array1::from_vec(
+                                    vals.iter().map(|&v| v as Int).collect(),
+                                )));
+                            }
+                            Some(QLValue::IntArray(arr)) => {
+                                // Update the entries in an existing array.
+                                for &dist_idx in dist_diff.iter() {
+                                    arr[dist_idx] = vals[dist_idx] as Int;
+                                }
+                            }
+                            _ => (), // TODO
+                        }
+                    }
+                    None => return Err(format!("Could not find column {} in sums", col)),
+                };
+            }
+            QLNodeKind::Primitive(prim) => {
+                let mut lhs: Option<&QLValue> = None;
+                let mut rhs: Option<&QLValue> = None;
+                for edge in graph.edges_directed(node_id, Direction::Incoming) {
+                    let arg_id = *edge.weight();
+                    if arg_id == 0 {
+                        lhs = match &graph[edge.source()].value {
+                            Some(v) => Some(&v),
+                            None => None,
+                        };
+                    } else if arg_id == 1 {
+                        rhs = match &graph[edge.source()].value {
+                            Some(v) => Some(&v),
+                            None => None,
+                        };
+                    }
+                }
+                let result = match prim {
+                    QLPrimitive::Add => bin_broadcast_op!(lhs, rhs, |a, b| a + b),
+                    QLPrimitive::Sub => bin_broadcast_op!(lhs, rhs, |a, b| a - b),
+                    QLPrimitive::Mult => bin_broadcast_op!(lhs, rhs, |a, b| a * b),
+                    QLPrimitive::Eq => cmp_broadcast_op!(lhs, rhs, |a, b| a == b),
+                    QLPrimitive::Gt => cmp_broadcast_op!(lhs, rhs, |a, b| a > b),
+                    QLPrimitive::Geq => cmp_broadcast_op!(lhs, rhs, |a, b| a >= b),
+                    QLPrimitive::Lt => cmp_broadcast_op!(lhs, rhs, |a, b| a < b),
+                    QLPrimitive::Leq => cmp_broadcast_op!(lhs, rhs, |a, b| a <= b),
+                    QLPrimitive::Zeros => match lhs {
+                        Some(QLValue::Int(size)) => Ok(QLValue::IntArray(Array1::<Int>::zeros(
+                            (*size as usize,).f(),
+                        ))),
+                        _ => Err("cannot create non-int zeros array".to_string()),
+                    },
+                    /*
+                    Divide,
+                    Sort,
+                    Sum,
+                    Min,
+                    Max,
+                    Median,
+                    Mode,
+                    Mean,
+                    And,
+                    Or,
+                    Not,
+                    */
+                    _ => Err("not implemented yet!".to_string()),
+                };
+                graph[node_id].value = Some(result?);
+            }
+            _ => (),
+        }
+    }
+    Ok(())
 }
-*/
+
+/// Computes the update order for a computation graph.
+fn update_order(graph: &QLComputeGraph) -> Result<Vec<NodeIndex>, String> {
+    let order = toposort(graph, None);
+    if order.is_err() {
+        return Err(format!("cycle in compute graph: {:?}", order.unwrap_err()));
+    }
+    Ok(order
+        .unwrap()
+        .into_iter()
+        .filter(|nid| {
+            match graph[*nid].kind {
+                QLNodeKind::Column(_) => true,
+                QLNodeKind::Primitive(_) => true,
+                // Ignore constant nodes and the like.
+                _ => false,
+            }
+        })
+        .collect())
+}
 
 #[cfg(test)]
 mod tests {
@@ -627,6 +1136,7 @@ mod tests {
         )
     }
 
+    #[test]
     fn test_parse_expr_missing_close_paren() {
         assert_eq!(
             parse_expr("(+ 1 2".to_string()),
@@ -634,6 +1144,7 @@ mod tests {
         )
     }
 
+    #[test]
     fn test_parse_expr_extra_close_paren() {
         assert_eq!(
             parse_expr("(+ 1 2))".to_string()),
@@ -641,13 +1152,15 @@ mod tests {
         )
     }
 
+    #[test]
     fn test_parse_expr_extra_close_parens() {
         assert_eq!(
             parse_expr("(+ 1 2)))".to_string()),
-            Err(QLError::ExtraChars),
+            Err(QLError::UnmatchedParens),
         )
     }
 
+    #[test]
     fn test_parse_expr_extra_expr() {
         assert_eq!(
             parse_expr("(+ 1 2) (+ 1 2)".to_string()),
@@ -655,6 +1168,7 @@ mod tests {
         )
     }
 
+    #[test]
     fn test_parse_expr_applied_non_function() {
         assert_eq!(
             parse_expr("((+ 1 2))".to_string()),
