@@ -7,6 +7,7 @@ use clap::{value_t, App, Arg};
 use frcw::init::graph_from_networkx;
 use ndarray::prelude::*;
 use ndarray::{Array, Array1};
+use ndarray_stats::QuantileExt;
 use petgraph::algo::toposort;
 use petgraph::dot::Dot;
 use petgraph::graph::{Graph, NodeIndex};
@@ -16,7 +17,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, stdin, BufRead, Write};
+use std::io::{self, stdin, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -35,7 +36,7 @@ fn main() {
             Arg::with_name("chain_data")
                 .long("chain-data")
                 .takes_value(true)
-                //.required(true)
+                .required(true)
                 .help("The path of the chain run data (in JSONL format)."),
         )
         .arg(
@@ -46,6 +47,7 @@ fn main() {
                 .help("The number of threads to use."),
         );
     let matches = cli.get_matches();
+    let chain_data_path = PathBuf::from(matches.value_of("chain_data").unwrap());
 
     loop {
         print!("> ");
@@ -55,17 +57,92 @@ fn main() {
         let expr = parse_expr(buffer);
         match expr {
             Err(e) => println!("cannot parse expression: {:?}", e),
-            //Ok(expr) => println!("expression: {}", expr)
             Ok(expr) => {
                 let (mut comp_graph, root) = expr_to_graph(&expr);
-                let order = update_order(&comp_graph).unwrap();
-                match eval_graph(&mut comp_graph, &order, &BTreeMap::new(), &vec![]) {
-                    Ok(_) => println!("{}", fmt_node_value(&comp_graph[root].value)),
-                    Err(e) => println!("evaluation error: {}", e),
-                };
+                readlines(&chain_data_path, &mut comp_graph, root);
             }
         }
     }
+}
+
+/// Runs lines from a JSONL file through a compute graph.
+fn readlines(
+    data_path: &PathBuf,
+    comp_graph: &mut QLComputeGraph,
+    root: NodeIndex,
+) -> Result<(), io::Error> {
+    let order = update_order(&comp_graph).unwrap();
+    let mut started = false;
+    let mut col_vals = BTreeMap::<String, Vec<i64>>::new();
+    let file = File::open(data_path)?;
+    let reader = BufReader::new(file);
+
+    for (line, contents) in reader.lines().enumerate() {
+        let line_data: Value = match serde_json::from_str(&contents?) {
+            Ok(data) => data,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Could not parse line {} as JSON", line),
+                ))
+            }
+        };
+        if let Some(init_data) = line_data.get("init") {
+            if started {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Double initialization on line {}", line),
+                ));
+            }
+            let cols = init_data.as_object().unwrap()["sums"].as_object().unwrap();
+            let num_dists = init_data.as_object().unwrap()["num_dists"]
+                .as_u64()
+                .unwrap();
+            for (col, vals) in cols.iter() {
+                col_vals.insert(
+                    format!(".{}", col),
+                    vals.as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|c| c.as_i64().unwrap())
+                        .collect(),
+                );
+            }
+            started = true;
+            eval_graph(
+                comp_graph,
+                &order,
+                &col_vals,
+                &(0..num_dists).map(|v| v as usize).collect::<Vec<usize>>(),
+            );
+            println!("{}", fmt_node_value(&comp_graph[root].value));
+        }
+        if let Some(step_data) = line_data.get("step") {
+            if !started {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Step before initialization on line {}", line),
+                ));
+            }
+            let dists: Vec<usize> = step_data["dists"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d.as_u64().unwrap() as usize)
+                .collect();
+            let step_sums = step_data["sums"].as_object().unwrap();
+            for (col, delta_vals) in step_sums.iter() {
+                let mut prev_vals = col_vals.get_mut(&format!(".{}", col)).unwrap();
+                for (dist, val) in dists.iter().zip(delta_vals.as_array().unwrap().iter()) {
+                    prev_vals[*dist] = val.as_i64().unwrap();
+                }
+                println!("{} -> {:?}", col, prev_vals);
+            }
+            eval_graph(comp_graph, &order, &col_vals, &dists);
+            println!("{}", fmt_node_value(&comp_graph[root].value));
+        }
+    }
+    Ok(())
 }
 
 /// GerryQL basis functions.
@@ -898,7 +975,7 @@ macro_rules! cmp_broadcast_op {
 fn eval_graph(
     graph: &mut QLComputeGraph,
     order: &[NodeIndex],
-    column_sums: &BTreeMap<String, Vec<u32>>,
+    column_sums: &BTreeMap<String, Vec<i64>>,
     dist_diff: &[usize],
 ) -> Result<(), String> {
     for &node_id in order.iter() {
@@ -959,7 +1036,19 @@ fn eval_graph(
                         ))),
                         _ => Err("cannot create non-int zeros array".to_string()),
                     },
+                    QLPrimitive::Sum => match lhs {
+                        Some(QLValue::IntArray(v)) => Ok(QLValue::Int(v.sum())),
+                        Some(QLValue::BoolArray(v)) => Ok(QLValue::Int(v.map(|x| *x as Int).sum())),
+                        Some(QLValue::FloatArray(v)) => Ok(QLValue::Float(v.sum())),
+                        _ => Err("cannot sum non-array".to_string()),
+                    },
                     /*
+                    QLPrimitive::Min => match lhs {
+                        Some(QLValue::IntArray(v)) => Ok(QLValue::Int(v.min())),
+                        Some(QLValue::BoolArray(v)) => Ok(QLValue::Int(v.map(|x| *x as Int).sum())),
+                        Some(QLValue::FloatArray(v)) => Ok(QLValue::Float(v.sum())),
+                        _ => Err("cannot sum non-array".to_string())
+                    }
                     Divide,
                     Sort,
                     Sum,
