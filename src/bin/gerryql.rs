@@ -3,22 +3,22 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-use clap::{value_t, App, Arg};
-use frcw::init::graph_from_networkx;
+use clap::{App, Arg};
+// use frcw::init::graph_from_networkx;
 use ndarray::prelude::*;
-use ndarray::{Array, Array1};
-use ndarray_stats::QuantileExt;
+use ndarray::Array1;
+// use ndarray_stats::QuantileExt;
 use petgraph::algo::toposort;
-use petgraph::dot::Dot;
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
-use serde_json::Value;
-use std::collections::BTreeMap;
+use serde_json::{json, Value};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::fs::{self, File};
-use std::io::{self, stdin, BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::PathBuf;
 
 fn main() {
     let cli = App::new("gerryql")
@@ -29,8 +29,13 @@ fn main() {
             Arg::with_name("graph_json")
                 .long("graph-json")
                 .takes_value(true)
-                //.required(true)
                 .help("The path of the dual graph (in NetworkX format)."),
+        )
+        .arg(
+            Arg::with_name("query_json")
+                .long("query-json")
+                .takes_value(true)
+                .help("The path of the query definitions (triggers batch mode)."),
         )
         .arg(
             Arg::with_name("chain_data")
@@ -48,18 +53,52 @@ fn main() {
         );
     let matches = cli.get_matches();
     let chain_data_path = PathBuf::from(matches.value_of("chain_data").unwrap());
+    let query_path = match matches.value_of("query_json") {
+        Some(v) => Some(PathBuf::from(v)),
+        None => None,
+    };
 
-    loop {
-        print!("> ");
-        let _ = io::stdout().flush();
-        let mut buffer = String::new();
-        let _ = io::stdin().read_line(&mut buffer);
-        let expr = parse_expr(buffer);
-        match expr {
-            Err(e) => println!("cannot parse expression: {:?}", e),
-            Ok(expr) => {
-                let (mut comp_graph, root) = expr_to_graph(&expr);
-                readlines(&chain_data_path, &mut comp_graph, root);
+    match query_path {
+        Some(path) => {
+            // Batch mode.
+            let query_file = File::open(path).unwrap();
+            let query_reader = BufReader::new(query_file);
+            let queries_outer: Value = serde_json::from_reader(query_reader).unwrap();
+            let queries = queries_outer["queries"].as_object().unwrap();
+            let mut query_keys = vec![];
+            let mut graphs = vec![];
+            let mut roots = vec![];
+            for (k, e) in queries.iter() {
+                let (mut graph, mut root) =
+                    expr_to_graph(&parse_expr(e.as_str().unwrap().to_string()).unwrap());
+                query_keys.push(k.to_string());
+                graphs.push(graph);
+                roots.push(root);
+            }
+            let (hists, first_occs) = collect_stats(&chain_data_path, &mut graphs, &roots).unwrap();
+            let mut results = json!({});
+            for ((key, key_hist), key_first_occs) in
+                query_keys.iter().zip(hists.iter()).zip(first_occs.iter())
+            {
+                results[key] = json!({"hist": key_hist, "first_occs": key_first_occs});
+            }
+            println!("{}", results);
+        }
+        None => {
+            // Interactive mode.
+            loop {
+                print!("> ");
+                let _ = io::stdout().flush();
+                let mut buffer = String::new();
+                let _ = io::stdin().read_line(&mut buffer);
+                let expr = parse_expr(buffer);
+                match expr {
+                    Err(e) => println!("cannot parse expression: {:?}", e),
+                    Ok(expr) => {
+                        let (mut comp_graph, root) = expr_to_graph(&expr);
+                        readlines(&chain_data_path, &mut comp_graph, root).unwrap();
+                    }
+                }
             }
         }
     }
@@ -74,9 +113,9 @@ fn readlines(
     let order = update_order(&comp_graph).unwrap();
     let mut started = false;
     let mut col_vals = BTreeMap::<String, Vec<i64>>::new();
+
     let file = File::open(data_path)?;
     let reader = BufReader::new(file);
-
     for (line, contents) in reader.lines().enumerate() {
         let line_data: Value = match serde_json::from_str(&contents?) {
             Ok(data) => data,
@@ -114,9 +153,11 @@ fn readlines(
                 &order,
                 &col_vals,
                 &(0..num_dists).map(|v| v as usize).collect::<Vec<usize>>(),
-            );
+            )
+            .unwrap();
             println!("{}", fmt_node_value(&comp_graph[root].value));
         }
+
         if let Some(step_data) = line_data.get("step") {
             if !started {
                 return Err(io::Error::new(
@@ -132,17 +173,153 @@ fn readlines(
                 .collect();
             let step_sums = step_data["sums"].as_object().unwrap();
             for (col, delta_vals) in step_sums.iter() {
-                let mut prev_vals = col_vals.get_mut(&format!(".{}", col)).unwrap();
+                let prev_vals = col_vals.get_mut(&format!(".{}", col)).unwrap();
                 for (dist, val) in dists.iter().zip(delta_vals.as_array().unwrap().iter()) {
                     prev_vals[*dist] = val.as_i64().unwrap();
                 }
-                println!("{} -> {:?}", col, prev_vals);
             }
-            eval_graph(comp_graph, &order, &col_vals, &dists);
+            eval_graph(comp_graph, &order, &col_vals, &dists).unwrap();
             println!("{}", fmt_node_value(&comp_graph[root].value));
         }
     }
     Ok(())
+}
+
+type Hist = HashMap<Int, Int>;
+type HistCollection = Vec<Hist>;
+
+/// Collects statistics over compute graphs.
+fn collect_stats(
+    data_path: &PathBuf,
+    comp_graphs: &mut [QLComputeGraph],
+    roots: &[NodeIndex],
+) -> Result<(HistCollection, HistCollection), io::Error> {
+    let orders: Vec<Vec<NodeIndex>> = comp_graphs
+        .iter()
+        .map(|graph| update_order(graph).unwrap())
+        .collect();
+    let mut started = false;
+    let mut col_vals = BTreeMap::<String, Vec<i64>>::new();
+
+    let file = File::open(data_path)?;
+    let reader = BufReader::new(file);
+
+    let mut hists = vec![Hist::new(); comp_graphs.len()];
+    let mut first_occs = vec![Hist::new(); comp_graphs.len()];
+
+    for (line, contents) in reader.lines().enumerate() {
+        let line_data: Value = match serde_json::from_str(&contents?) {
+            Ok(data) => data,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Could not parse line {} as JSON", line),
+                ))
+            }
+        };
+        if let Some(init_data) = line_data.get("init") {
+            if started {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Double initialization on line {}", line),
+                ));
+            }
+            let cols = init_data.as_object().unwrap()["sums"].as_object().unwrap();
+            let num_dists = init_data.as_object().unwrap()["num_dists"]
+                .as_u64()
+                .unwrap();
+            for (col, vals) in cols.iter() {
+                col_vals.insert(
+                    format!(".{}", col),
+                    vals.as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|c| c.as_i64().unwrap())
+                        .collect(),
+                );
+            }
+            started = true;
+            for ((((graph, root), order), key_hist), key_first_occs) in comp_graphs
+                .iter_mut()
+                .zip(roots.iter())
+                .zip(orders.iter())
+                .zip(hists.iter_mut())
+                .zip(first_occs.iter_mut())
+            {
+                eval_graph(
+                    graph,
+                    order,
+                    &col_vals,
+                    &(0..num_dists).map(|v| v as usize).collect::<Vec<usize>>(),
+                )
+                .unwrap();
+
+                // Update the histogram and first occurrences statistics.
+                let root_val = match &graph[*root].value {
+                    Some(QLValue::Int(v)) => *v,
+                    Some(QLValue::Bool(v)) => *v as Int,
+                    Some(QLValue::Float(_)) => panic!("Floating-point histograms not supported."),
+                    Some(_) => panic!("Cannot collect histogram over non-scalar value."),
+                    None => unreachable!(),
+                };
+                match key_hist.entry(root_val) {
+                    Entry::Occupied(o) => *o.into_mut() += 1,
+                    Entry::Vacant(v) => {
+                        v.insert(0);
+                    }
+                };
+                key_first_occs.entry(root_val).or_insert(line as Int);
+            }
+        }
+
+        if let Some(step_data) = line_data.get("step") {
+            if !started {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Step before initialization on line {}", line),
+                ));
+            }
+            let dists: Vec<usize> = step_data["dists"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d.as_u64().unwrap() as usize)
+                .collect();
+            let step_sums = step_data["sums"].as_object().unwrap();
+            for (col, delta_vals) in step_sums.iter() {
+                let prev_vals = col_vals.get_mut(&format!(".{}", col)).unwrap();
+                for (dist, val) in dists.iter().zip(delta_vals.as_array().unwrap().iter()) {
+                    prev_vals[*dist] = val.as_i64().unwrap();
+                }
+            }
+            for ((((graph, root), order), key_hist), key_first_occs) in comp_graphs
+                .iter_mut()
+                .zip(roots.iter())
+                .zip(orders.iter())
+                .zip(hists.iter_mut())
+                .zip(first_occs.iter_mut())
+            {
+                eval_graph(graph, order, &col_vals, &dists).unwrap();
+
+                // Update the histogram and first occurrences statistics.
+                let root_val = match &graph[*root].value {
+                    Some(QLValue::Int(v)) => *v,
+                    Some(QLValue::Bool(v)) => *v as Int,
+                    Some(QLValue::Float(_)) => panic!("Floating-point histograms not supported."),
+                    Some(_) => panic!("Cannot collect histogram over non-scalar value."),
+                    None => unreachable!(),
+                };
+                match key_hist.entry(root_val) {
+                    Entry::Occupied(o) => *o.into_mut() += 1,
+                    Entry::Vacant(v) => {
+                        v.insert(0);
+                    }
+                };
+                key_first_occs.entry(root_val).or_insert(line as Int);
+            }
+        }
+    }
+    Ok((hists, first_occs))
 }
 
 /// GerryQL basis functions.
@@ -197,16 +374,6 @@ impl fmt::Display for QLPrimitive {
         };
         write!(f, "{}", token)
     }
-}
-
-/// Kinds of primitive GerryQL
-#[derive(Copy, Clone, PartialEq, Debug)]
-enum QLPrimitiveKind {
-    Unary,
-    Binary,
-    Cmp,
-    Agg,
-    Bool,
 }
 
 /// GerryQL expressions.
@@ -277,7 +444,7 @@ enum QLError {
 }
 
 //// Parsed GerryQL tokens.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(PartialEq)]
 enum QLToken {
     StartLambda,
     Start,
@@ -324,34 +491,10 @@ fn token_to_primitive(token: &str) -> Option<QLPrimitive> {
         "and" => Some(QLPrimitive::And),
         "or" => Some(QLPrimitive::Or),
         "not" => Some(QLPrimitive::Not),
+        "&&" => Some(QLPrimitive::And),
+        "||" => Some(QLPrimitive::Or),
         "zeros" => Some(QLPrimitive::Zeros),
         _ => None,
-    }
-}
-
-/// Converts a token to a primitive function identifier, if possible.
-fn primitive_kind(prim: QLPrimitive) -> QLPrimitiveKind {
-    match prim {
-        QLPrimitive::Add => QLPrimitiveKind::Binary,
-        QLPrimitive::Sub => QLPrimitiveKind::Binary,
-        QLPrimitive::Divide => QLPrimitiveKind::Binary,
-        QLPrimitive::Mult => QLPrimitiveKind::Binary,
-        QLPrimitive::Sort => QLPrimitiveKind::Unary,
-        QLPrimitive::Sum => QLPrimitiveKind::Agg,
-        QLPrimitive::Min => QLPrimitiveKind::Agg,
-        QLPrimitive::Max => QLPrimitiveKind::Agg,
-        QLPrimitive::Median => QLPrimitiveKind::Agg,
-        QLPrimitive::Mode => QLPrimitiveKind::Agg,
-        QLPrimitive::Mean => QLPrimitiveKind::Agg,
-        QLPrimitive::Eq => QLPrimitiveKind::Cmp,
-        QLPrimitive::Gt => QLPrimitiveKind::Cmp,
-        QLPrimitive::Geq => QLPrimitiveKind::Cmp,
-        QLPrimitive::Lt => QLPrimitiveKind::Cmp,
-        QLPrimitive::Leq => QLPrimitiveKind::Cmp,
-        QLPrimitive::And => QLPrimitiveKind::Binary,
-        QLPrimitive::Or => QLPrimitiveKind::Binary,
-        QLPrimitive::Not => QLPrimitiveKind::Unary,
-        QLPrimitive::Zeros => QLPrimitiveKind::Unary,
     }
 }
 
@@ -498,7 +641,6 @@ impl fmt::Display for QLNodeKind {
 }
 
 /// How should a computation's value be updated?
-#[derive(Clone)]
 enum QLUpdate {
     /// Any time a tracked property of a districting plan changes,
     /// update the whole node.
@@ -511,7 +653,6 @@ enum QLUpdate {
 }
 
 /// A node in a GerryQL expression's computation/dependency graph.
-#[derive(Clone)]
 struct QLComputeNode {
     /// The kind of the compute node.
     kind: QLNodeKind,
@@ -605,11 +746,6 @@ fn expr_to_node(
         }
     }
     node_idx
-}
-
-/// Evaluates a primitive function call.
-fn eval_primitive(prim: QLPrimitive, args: &[QLComputeNode]) {
-    let kind = primitive_kind(prim);
 }
 
 /// Coerces a boolean to a float, matching Python semantics.
@@ -828,9 +964,9 @@ macro_rules! cmp_broadcast_op {
             (Some(QLValue::Bool(l)), Some(QLValue::IntArray(r))) => {
                 Ok(QLValue::BoolArray(r.map(|v| $op(*l as Int, *v))))
             }
-            (Some(QLValue::Bool(l)), Some(QLValue::BoolArray(r))) => Ok(QLValue::BoolArray(
-                r.map(|v| $op(*l as Int, *v as Int)),
-            )),
+            (Some(QLValue::Bool(l)), Some(QLValue::BoolArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(*l as Int, *v as Int))))
+            }
             (Some(QLValue::Bool(l)), Some(QLValue::FloatArray(r))) => {
                 Ok(QLValue::BoolArray(r.map(|v| $op(bool_to_float(*l), *v))))
             }
@@ -861,12 +997,15 @@ macro_rules! cmp_broadcast_op {
             (Some(QLValue::IntArray(l)), Some(QLValue::Float(r))) => {
                 Ok(QLValue::BoolArray(l.map(|v| $op(*v as Float, *r))))
             }
-            /*
             (Some(QLValue::IntArray(l)), Some(QLValue::IntArray(r))) => {
                 shape_check!(
                     l,
                     r,
-                    |l: &IntArray, r: &IntArray| l.iter().zip(r.iter()).map(|(v1, v2)| $op(*v1, *v2)).collect(),
+                    |l: &IntArray, r: &IntArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1, *v2))
+                        .collect(),
                     QLValue::BoolArray
                 )
             }
@@ -874,7 +1013,11 @@ macro_rules! cmp_broadcast_op {
                 shape_check!(
                     l,
                     r,
-                    |l: &IntArray, r: &BoolArray| l.iter().zip(r.iter()).map(|(v1, v2)| $op(*v1, *v2 as Int)).collect(),
+                    |l: &IntArray, r: &BoolArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1, *v2 as Int))
+                        .collect(),
                     QLValue::BoolArray
                 )
             }
@@ -882,90 +1025,146 @@ macro_rules! cmp_broadcast_op {
                 shape_check!(
                     l,
                     r,
-                    |l: &IntArray, r: &FloatArray| l.iter().zip(r.iter()).map(|(v1, v2)| $op(*v1 as Float, *v2)).collect(),
-                    QLValue::FloatArray
+                    |l: &IntArray, r: &FloatArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1 as Float, *v2))
+                        .collect(),
+                    QLValue::BoolArray
                 )
             }
             // bool array * X
             (Some(QLValue::BoolArray(l)), Some(QLValue::Int(r))) => {
-                Ok(QLValue::IntArray(l.map(|v| $op(*v as Int, r))))
+                Ok(QLValue::BoolArray(l.map(|v| $op(*v as Int, *r))))
             }
-            (Some(QLValue::BoolArray(l)), Some(QLValue::Bool(r))) => Ok(QLValue::IntArray(
-                l.map(|v| $op(*v as Int, *r as Int)),
-            )),
+            (Some(QLValue::BoolArray(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::BoolArray(l.map(|v| $op(*v as Int, *r as Int))))
+            }
             (Some(QLValue::BoolArray(l)), Some(QLValue::Float(r))) => {
-                Ok(QLValue::FloatArray(l.map(|v| $op(bool_to_float(*v), r))))
+                Ok(QLValue::BoolArray(l.map(|v| $op(bool_to_float(*v), *r))))
             }
             (Some(QLValue::BoolArray(l)), Some(QLValue::IntArray(r))) => {
                 shape_check!(
                     l,
                     r,
-                    |l: &BoolArray, r: &IntArray| $op(l.map(|v| *v as Int), r),
-                    QLValue::IntArray
+                    |l: &BoolArray, r: &IntArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1 as Int, *v2))
+                        .collect(),
+                    QLValue::BoolArray
                 )
             }
             (Some(QLValue::BoolArray(l)), Some(QLValue::BoolArray(r))) => {
                 shape_check!(
                     l,
                     r,
-                    |l: &BoolArray, r: &BoolArray| $op(
-                        l.map(|v| *v as Int),
-                        r.map(|v| *v as Int)
-                    ),
-                    QLValue::IntArray
+                    |l: &BoolArray, r: &BoolArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1 as Int, *v2 as Int))
+                        .collect(),
+                    QLValue::BoolArray
                 )
             }
             (Some(QLValue::BoolArray(l)), Some(QLValue::FloatArray(r))) => {
                 shape_check!(
                     l,
                     r,
-                    |l: &BoolArray, r: &FloatArray| $op(
-                        l.map(|v| bool_to_float(*v)),
-                        r
-                    ),
-                    QLValue::FloatArray
+                    |l: &BoolArray, r: &FloatArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(bool_to_float(*v1), *v2))
+                        .collect(),
+                    QLValue::BoolArray
                 )
             }
             // float array * X
             (Some(QLValue::FloatArray(l)), Some(QLValue::Int(r))) => {
-                Ok(QLValue::FloatArray($op(l, *r as Float)))
+                Ok(QLValue::BoolArray(l.map(|v| $op(*v, *r as Float))))
             }
             (Some(QLValue::FloatArray(l)), Some(QLValue::Bool(r))) => {
-                Ok(QLValue::FloatArray($op(l, bool_to_float(*r))))
+                Ok(QLValue::BoolArray(l.map(|v| $op(*v, bool_to_float(*r)))))
             }
             (Some(QLValue::FloatArray(l)), Some(QLValue::Float(r))) => {
-                Ok(QLValue::FloatArray($op(l, *r)))
+                Ok(QLValue::BoolArray(l.map(|v| $op(*v, *r))))
             }
             (Some(QLValue::FloatArray(l)), Some(QLValue::IntArray(r))) => {
                 shape_check!(
                     l,
                     r,
-                    |l: &FloatArray, r: &IntArray| $op(
-                        l,
-                        r.map(|v| *v as Float)
-                    ),
-                    QLValue::FloatArray
+                    |l: &FloatArray, r: &IntArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1, *v2 as Float))
+                        .collect(),
+                    QLValue::BoolArray
                 )
             }
             (Some(QLValue::FloatArray(l)), Some(QLValue::BoolArray(r))) => {
                 shape_check!(
                     l,
                     r,
-                    |l: &FloatArray, r: &BoolArray| $op(
-                        l,
-                        r.map(|v| bool_to_float(*v)),
-                    ),
-                    QLValue::FloatArray
+                    |l: &FloatArray, r: &BoolArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1, bool_to_float(*v2)))
+                        .collect(),
+                    QLValue::BoolArray
                 )
             }
             (Some(QLValue::FloatArray(l)), Some(QLValue::FloatArray(r))) => {
                 shape_check!(
                     l,
                     r,
-                    |l: &FloatArray, r: &FloatArray| $op(l, r),
-                    QLValue::FloatArray
+                    |l: &FloatArray, r: &FloatArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1, *v2))
+                        .collect(),
+                    QLValue::BoolArray
                 )
-            }*/
+            }
+            _ => unreachable!(),
+        }
+    };
+}
+
+/// Casts a generic QLValue to a boolean (array).
+fn bool_cast(v: Option<&QLValue>) -> Option<QLValue> {
+    match v {
+        Some(QLValue::Int(v)) => Some(QLValue::Bool(*v != 0)),
+        Some(QLValue::Bool(v)) => Some(QLValue::Bool(*v)),
+        Some(QLValue::Float(v)) => Some(QLValue::Bool(*v != 0.0)),
+        Some(QLValue::IntArray(v)) => Some(QLValue::BoolArray(v.map(|e| *e != 0))),
+        Some(QLValue::BoolArray(v)) => Some(QLValue::BoolArray(v.clone())), // TODO: inefficient?
+        Some(QLValue::FloatArray(v)) => Some(QLValue::BoolArray(v.map(|e| *e != 0.0))),
+        None => None,
+    }
+}
+
+macro_rules! bool_broadcast_op {
+    ($lhs:expr, $rhs:expr, $op:expr) => {
+        match (bool_cast($lhs), bool_cast($rhs)) {
+            (Some(QLValue::Bool(l)), Some(QLValue::Bool(r))) => Ok(QLValue::Bool($op(l, r))),
+            (Some(QLValue::Bool(l)), Some(QLValue::BoolArray(r))) => {
+                Ok(QLValue::BoolArray(r.map(|v| $op(l, *v))))
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::Bool(r))) => {
+                Ok(QLValue::BoolArray(l.map(|v| $op(*v, r))))
+            }
+            (Some(QLValue::BoolArray(l)), Some(QLValue::BoolArray(r))) => {
+                shape_check!(
+                    &l,
+                    &r,
+                    |l: &BoolArray, r: &BoolArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1, *v2))
+                        .collect(),
+                    QLValue::BoolArray
+                )
+            }
             _ => unreachable!(),
         }
     };
@@ -982,7 +1181,7 @@ fn eval_graph(
         match &graph[node_id].kind {
             QLNodeKind::Column(col) => {
                 // Update the column sums cached in the compute graph.
-                let column_vals = column_sums.get(&col[1..]);
+                let column_vals = column_sums.get(col);
                 match column_vals {
                     Some(vals) => {
                         match &mut graph[node_id].value {
@@ -998,7 +1197,7 @@ fn eval_graph(
                                     arr[dist_idx] = vals[dist_idx] as Int;
                                 }
                             }
-                            _ => (), // TODO
+                            _ => unreachable!(), // TODO
                         }
                     }
                     None => return Err(format!("Could not find column {} in sums", col)),
@@ -1030,6 +1229,19 @@ fn eval_graph(
                     QLPrimitive::Geq => cmp_broadcast_op!(lhs, rhs, |a, b| a >= b),
                     QLPrimitive::Lt => cmp_broadcast_op!(lhs, rhs, |a, b| a < b),
                     QLPrimitive::Leq => cmp_broadcast_op!(lhs, rhs, |a, b| a <= b),
+                    QLPrimitive::And => bool_broadcast_op!(lhs, rhs, |a, b| a && b),
+                    QLPrimitive::Or => bool_broadcast_op!(lhs, rhs, |a, b| a || b),
+                    QLPrimitive::Not => match lhs {
+                        Some(QLValue::Int(v)) => Ok(QLValue::Bool(*v == 0)),
+                        Some(QLValue::Bool(v)) => Ok(QLValue::Bool(!*v)),
+                        Some(QLValue::Float(v)) => Ok(QLValue::Bool(*v == 0.0)),
+                        Some(QLValue::IntArray(v)) => Ok(QLValue::BoolArray(v.map(|e| *e == 0))),
+                        Some(QLValue::BoolArray(v)) => Ok(QLValue::BoolArray(v.map(|e| !*e))),
+                        Some(QLValue::FloatArray(v)) => {
+                            Ok(QLValue::BoolArray(v.map(|e| *e == 0.0)))
+                        }
+                        None => unreachable!(),
+                    },
                     QLPrimitive::Zeros => match lhs {
                         Some(QLValue::Int(size)) => Ok(QLValue::IntArray(Array1::<Int>::zeros(
                             (*size as usize,).f(),
@@ -1051,15 +1263,11 @@ fn eval_graph(
                     }
                     Divide,
                     Sort,
-                    Sum,
                     Min,
                     Max,
                     Median,
                     Mode,
-                    Mean,
-                    And,
-                    Or,
-                    Not,
+                    Mean
                     */
                     _ => Err("not implemented yet!".to_string()),
                 };
