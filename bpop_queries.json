@@ -1,0 +1,6 @@
+{
+    "queries": {
+        "bpop_40": "(sum (> .BPOP20 (* 0.4 .TOTPOP20)))",
+        "bpop_50": "(sum (> .BPOP20 (* 0.5 .TOTPOP20)))"
+    }
+}
