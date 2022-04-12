@@ -100,7 +100,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c06b9e1a9ea243aa7be8cf51e025562334a52674508cc02d8b54a99d4986a13"
 dependencies = [
- "num-complex",
+ "num-complex 0.3.1",
  "num-traits",
  "rand 0.7.3",
  "serde",
@@ -117,9 +117,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.0.69"
+version = "1.0.73"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e70cc2f62c6ce1868963827bd677764c62d07c3d9a3e1fb1177ee1a9ab199eb2"
+checksum = "2fff2a6927b3bb87f9595d67196a70493f627687a71d87a0d692242c33f58c11"
 
 [[package]]
 name = "cfg-if"
@@ -140,6 +140,15 @@ dependencies = [
  "textwrap",
  "unicode-width",
  "vec_map",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8ad8cef104ac57b68b89df3208164d228503abbdce70f6880ffa3d970e7443a"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -336,8 +345,9 @@ dependencies = [
  "crossbeam",
  "crossbeam-channel",
  "mimalloc",
- "ndarray",
+ "ndarray 0.15.4",
  "ndarray-linalg",
+ "ndarray-stats",
  "pcompress",
  "petgraph",
  "rand 0.8.4",
@@ -346,6 +356,7 @@ dependencies = [
  "serde_json",
  "sha3",
  "snafu",
+ "snmalloc-rs",
  "test_fixtures",
 ]
 
@@ -459,7 +470,7 @@ checksum = "041b3cb380f92a53e317ea046d0e715d2302dae6d2f426bdf3ccf27a36ef40e9"
 dependencies = [
  "lapack-sys",
  "libc",
- "num-complex",
+ "num-complex 0.3.1",
 ]
 
 [[package]]
@@ -524,6 +535,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "matrixmultiply"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "add85d4dd35074e6fedc608f8c8f513a3548619a9024b751949ef0e8e45a4d84"
+dependencies = [
+ "rawpointer",
+]
+
+[[package]]
 name = "memchr"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -556,8 +576,21 @@ dependencies = [
  "approx 0.4.0",
  "blas-src",
  "cblas-sys",
- "matrixmultiply",
- "num-complex",
+ "matrixmultiply 0.2.4",
+ "num-complex 0.3.1",
+ "num-integer",
+ "num-traits",
+ "rawpointer",
+]
+
+[[package]]
+name = "ndarray"
+version = "0.15.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec23e6762830658d2b3d385a75aa212af2f67a4586d4442907144f3bb6a1ca8"
+dependencies = [
+ "matrixmultiply 0.3.2",
+ "num-complex 0.4.0",
  "num-integer",
  "num-traits",
  "rawpointer",
@@ -571,11 +604,35 @@ checksum = "dfb88fe83ac017c544b6042d172e62a4d1e9b293e22caf46ae305755cc533a7a"
 dependencies = [
  "cauchy",
  "lax",
- "ndarray",
- "num-complex",
+ "ndarray 0.14.0",
+ "num-complex 0.3.1",
  "num-traits",
  "rand 0.7.3",
  "thiserror",
+]
+
+[[package]]
+name = "ndarray-stats"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22877ad014bafa2f7dcfa5d556b0c7a52b0546cc98061a1ebef6d1834957b069"
+dependencies = [
+ "indexmap",
+ "itertools",
+ "ndarray 0.15.4",
+ "noisy_float",
+ "num-integer",
+ "num-traits",
+ "rand 0.8.4",
+]
+
+[[package]]
+name = "noisy_float"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978fe6e6ebc0bf53de533cd456ca2d9de13de13856eda1518a285d7705a213af"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -587,6 +644,15 @@ dependencies = [
  "num-traits",
  "rand 0.7.3",
  "serde",
+]
+
+[[package]]
+name = "num-complex"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26873667bbbb7c5182d4a37c1add32cdf09f841af72da53318fdb81543c15085"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -1050,6 +1116,24 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "snmalloc-rs"
+version = "0.2.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36acaace2719c972eab3ef6a6b3aee4495f0bf300f59715bb9cff6c5acf4ae20"
+dependencies = [
+ "snmalloc-sys",
+]
+
+[[package]]
+name = "snmalloc-sys"
+version = "0.2.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35a7e6e7d5fe756bee058ddedefc7e0a9f9c8dbaa9401b48ed3c17d6578e40b5"
+dependencies = [
+ "cmake",
 ]
 
 [[package]]
