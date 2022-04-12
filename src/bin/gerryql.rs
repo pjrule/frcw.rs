@@ -41,7 +41,6 @@ fn main() {
             Arg::with_name("chain_data")
                 .long("chain-data")
                 .takes_value(true)
-                .required(true)
                 .help("The path of the chain run data (in JSONL format)."),
         )
         .arg(
@@ -52,7 +51,6 @@ fn main() {
                 .help("The number of threads to use."),
         );
     let matches = cli.get_matches();
-    let chain_data_path = PathBuf::from(matches.value_of("chain_data").unwrap());
     let query_path = match matches.value_of("query_json") {
         Some(v) => Some(PathBuf::from(v)),
         None => None,
@@ -69,13 +67,13 @@ fn main() {
             let mut graphs = vec![];
             let mut roots = vec![];
             for (k, e) in queries.iter() {
-                let (mut graph, mut root) =
+                let (graph, root) =
                     expr_to_graph(&parse_expr(e.as_str().unwrap().to_string()).unwrap());
                 query_keys.push(k.to_string());
                 graphs.push(graph);
                 roots.push(root);
             }
-            let (hists, first_occs) = collect_stats(&chain_data_path, &mut graphs, &roots).unwrap();
+            let (hists, first_occs) = collect_stats(&mut graphs, &roots).unwrap();
             let mut results = json!({});
             for ((key, key_hist), key_first_occs) in
                 query_keys.iter().zip(hists.iter()).zip(first_occs.iter())
@@ -86,6 +84,7 @@ fn main() {
         }
         None => {
             // Interactive mode.
+            let chain_data_path = PathBuf::from(matches.value_of("chain_data").unwrap());
             loop {
                 print!("> ");
                 let _ = io::stdout().flush();
@@ -190,7 +189,6 @@ type HistCollection = Vec<Hist>;
 
 /// Collects statistics over compute graphs.
 fn collect_stats(
-    data_path: &PathBuf,
     comp_graphs: &mut [QLComputeGraph],
     roots: &[NodeIndex],
 ) -> Result<(HistCollection, HistCollection), io::Error> {
@@ -201,13 +199,21 @@ fn collect_stats(
     let mut started = false;
     let mut col_vals = BTreeMap::<String, Vec<i64>>::new();
 
-    let file = File::open(data_path)?;
-    let reader = BufReader::new(file);
-
     let mut hists = vec![Hist::new(); comp_graphs.len()];
     let mut first_occs = vec![Hist::new(); comp_graphs.len()];
 
-    for (line, contents) in reader.lines().enumerate() {
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+    let mut line = 0;
+    while let Some(contents) = lines.next() {
+        match contents {
+            Err(_) => break, // EOF?
+            Ok(ref v) => {
+                if v == "" {
+                    break;  // EOF?
+                }
+            }
+        };
         let line_data: Value = match serde_json::from_str(&contents?) {
             Ok(data) => data,
             Err(_) => {
@@ -318,6 +324,7 @@ fn collect_stats(
                 key_first_occs.entry(root_val).or_insert(line as Int);
             }
         }
+        line += 1;
     }
     Ok((hists, first_occs))
 }
