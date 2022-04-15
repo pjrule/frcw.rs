@@ -63,6 +63,12 @@ fn main() {
             let query_reader = BufReader::new(query_file);
             let queries_outer: Value = serde_json::from_reader(query_reader).unwrap();
             let queries = queries_outer["queries"].as_object().unwrap();
+            /*
+            let chain_data_path = match matches.value_of("chain_data") {
+                Some(v) => PathBuf::from(v),
+                None => None,
+            };
+            */
             let mut query_keys = vec![];
             let mut graphs = vec![];
             let mut roots = vec![];
@@ -73,12 +79,19 @@ fn main() {
                 graphs.push(graph);
                 roots.push(root);
             }
-            let (hists, first_occs) = collect_stats(&mut graphs, &roots).unwrap();
+            let (hists, first_occs, hist_slices) = collect_stats(&mut graphs, &roots).unwrap();
             let mut results = json!({});
-            for ((key, key_hist), key_first_occs) in
-                query_keys.iter().zip(hists.iter()).zip(first_occs.iter())
+            for (((key, key_hist), key_first_occs), key_hist_slices) in query_keys
+                .iter()
+                .zip(hists.iter())
+                .zip(first_occs.iter())
+                .zip(hist_slices.iter())
             {
-                results[key] = json!({"hist": key_hist, "first_occs": key_first_occs});
+                results[key] = json!({
+                    "hist": key_hist,
+                    "first_occs": key_first_occs,
+                    "hist_slices": key_hist_slices
+                });
             }
             println!("{}", results);
         }
@@ -191,13 +204,16 @@ type HistCollection = Vec<Hist>;
 fn collect_stats(
     comp_graphs: &mut [QLComputeGraph],
     roots: &[NodeIndex],
-) -> Result<(HistCollection, HistCollection), io::Error> {
+) -> Result<(HistCollection, HistCollection, Vec<HistCollection>), io::Error> {
     let orders: Vec<Vec<NodeIndex>> = comp_graphs
         .iter()
         .map(|graph| update_order(graph).unwrap())
         .collect();
     let mut started = false;
     let mut col_vals = BTreeMap::<String, Vec<i64>>::new();
+
+    let mut cur_hist_slices = vec![Hist::new(); comp_graphs.len()];
+    let mut hist_slices = vec![HistCollection::new(); comp_graphs.len()];
 
     let mut hists = vec![Hist::new(); comp_graphs.len()];
     let mut first_occs = vec![Hist::new(); comp_graphs.len()];
@@ -210,7 +226,7 @@ fn collect_stats(
             Err(_) => break, // EOF?
             Ok(ref v) => {
                 if v == "" {
-                    break;  // EOF?
+                    break; // EOF?
                 }
             }
         };
@@ -245,12 +261,14 @@ fn collect_stats(
                 );
             }
             started = true;
-            for ((((graph, root), order), key_hist), key_first_occs) in comp_graphs
-                .iter_mut()
-                .zip(roots.iter())
-                .zip(orders.iter())
-                .zip(hists.iter_mut())
-                .zip(first_occs.iter_mut())
+            for (((((graph, root), order), key_hist), key_first_occs), key_hist_slice) in
+                comp_graphs
+                    .iter_mut()
+                    .zip(roots.iter())
+                    .zip(orders.iter())
+                    .zip(hists.iter_mut())
+                    .zip(first_occs.iter_mut())
+                    .zip(cur_hist_slices.iter_mut())
             {
                 eval_graph(
                     graph,
@@ -271,7 +289,13 @@ fn collect_stats(
                 match key_hist.entry(root_val) {
                     Entry::Occupied(o) => *o.into_mut() += 1,
                     Entry::Vacant(v) => {
-                        v.insert(0);
+                        v.insert(1);
+                    }
+                };
+                match key_hist_slice.entry(root_val) {
+                    Entry::Occupied(o) => *o.into_mut() += 1,
+                    Entry::Vacant(v) => {
+                        v.insert(1);
                     }
                 };
                 key_first_occs.entry(root_val).or_insert(line as Int);
@@ -298,12 +322,14 @@ fn collect_stats(
                     prev_vals[*dist] = val.as_i64().unwrap();
                 }
             }
-            for ((((graph, root), order), key_hist), key_first_occs) in comp_graphs
-                .iter_mut()
-                .zip(roots.iter())
-                .zip(orders.iter())
-                .zip(hists.iter_mut())
-                .zip(first_occs.iter_mut())
+            for (((((graph, root), order), key_hist), key_first_occs), key_hist_slice) in
+                comp_graphs
+                    .iter_mut()
+                    .zip(roots.iter())
+                    .zip(orders.iter())
+                    .zip(hists.iter_mut())
+                    .zip(first_occs.iter_mut())
+                    .zip(cur_hist_slices.iter_mut())
             {
                 eval_graph(graph, order, &col_vals, &dists).unwrap();
 
@@ -318,15 +344,29 @@ fn collect_stats(
                 match key_hist.entry(root_val) {
                     Entry::Occupied(o) => *o.into_mut() += 1,
                     Entry::Vacant(v) => {
-                        v.insert(0);
+                        v.insert(1);
+                    }
+                };
+                match key_hist_slice.entry(root_val) {
+                    Entry::Occupied(o) => *o.into_mut() += 1,
+                    Entry::Vacant(v) => {
+                        v.insert(1);
                     }
                 };
                 key_first_occs.entry(root_val).or_insert(line as Int);
             }
         }
+        if line > 0 && line % 20000 == 0 {
+            for (key_hist_slice, key_hist_slices) in
+                cur_hist_slices.iter_mut().zip(hist_slices.iter_mut())
+            {
+                key_hist_slices.push(key_hist_slice.clone());
+                key_hist_slice.clear();
+            }
+        }
         line += 1;
     }
-    Ok((hists, first_occs))
+    Ok((hists, first_occs, hist_slices))
 }
 
 /// GerryQL basis functions.
