@@ -50,7 +50,10 @@ pub trait StatsWriter: Send {
 pub struct TSVWriter {}
 
 /// Writes assignments in space-delimited format (with step number prefix).
-pub struct AssignmentsOnlyWriter {}
+pub struct AssignmentsOnlyWriter {
+    /// Determines whether to canonicalize assignment vectors.
+    canonicalize: bool,
+}
 
 /// Writes assignments in Max Fan's `pcompress` binary format.
 pub struct PcompressWriter {
@@ -77,8 +80,24 @@ impl TSVWriter {
 }
 
 impl AssignmentsOnlyWriter {
-    pub fn new() -> AssignmentsOnlyWriter {
-        AssignmentsOnlyWriter {}
+    pub fn new(canonicalize: bool) -> AssignmentsOnlyWriter {
+        AssignmentsOnlyWriter {
+            canonicalize: canonicalize,
+        }
+    }
+
+    fn canonicalize_assignments(&self, partition: &Partition) -> Vec<u32> {
+        let mut canon = partition.assignments.clone();
+        let mut dist_mapping = vec![0; partition.num_dists as usize];
+        let mut cur_dist = 0;
+        for (idx, &assn) in partition.assignments.iter().enumerate() {
+            if dist_mapping[assn as usize] == 0 {
+                dist_mapping[assn as usize] = cur_dist;
+                cur_dist += 1;
+            }
+            canon[idx] = dist_mapping[assn as usize];
+        }
+        canon
     }
 }
 
@@ -228,7 +247,11 @@ impl StatsWriter for JSONLWriter {
 
 impl StatsWriter for AssignmentsOnlyWriter {
     fn init(&mut self, _graph: &Graph, partition: &Partition) -> Result<()> {
-        println!("0,{:?}", partition.assignments);
+        if self.canonicalize {
+            println!("0,{:?}", self.canonicalize_assignments(partition));
+        } else {
+            println!("0,{:?}", partition.assignments);
+        }
         Ok(())
     }
 
@@ -240,7 +263,11 @@ impl StatsWriter for AssignmentsOnlyWriter {
         _proposal: &RecomProposal,
         _counts: &SelfLoopCounts,
     ) -> Result<()> {
-        println!("{},{:?}", step, partition.assignments);
+        if self.canonicalize {
+            println!("{},{:?}", step, self.canonicalize_assignments(partition));
+        } else {
+            println!("{},{:?}", step, partition.assignments);
+        }
         Ok(())
     }
 

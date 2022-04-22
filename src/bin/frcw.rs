@@ -8,7 +8,7 @@ use frcw::config::parse_region_weights_config;
 use frcw::init::from_networkx;
 use frcw::recom::run::multi_chain;
 use frcw::recom::{RecomParams, RecomVariant};
-use frcw::stats::{JSONLWriter, PcompressWriter, StatsWriter, TSVWriter};
+use frcw::stats::{AssignmentsOnlyWriter, JSONLWriter, PcompressWriter, StatsWriter, TSVWriter};
 use serde_json::json;
 use sha3::{Digest, Sha3_256};
 use std::path::PathBuf;
@@ -151,6 +151,8 @@ fn main() {
         "jsonl" => Box::new(JSONLWriter::new(false, st_counts, cut_edges_count)),
         "pcompress" => Box::new(PcompressWriter::new()),
         "jsonl-full" => Box::new(JSONLWriter::new(true, st_counts, cut_edges_count)),
+        "assignments" => Box::new(AssignmentsOnlyWriter::new(false)),
+        "canonical-assignments" => Box::new(AssignmentsOnlyWriter::new(true)),
         bad => panic!("Parameter error: invalid writer '{}'", bad),
     };
     if variant == RecomVariant::Reversible && balance_ub == 0 {
@@ -201,7 +203,7 @@ fn main() {
             .unwrap()
             .insert("region_weights".to_string(), json!(region_weights));
     }
-    if writer_str != "pcompress" {
+    if writer_str == "jsonl" || writer_str == "jsonl-full" {
         // hotfix for pcompress writing
         // TODO: move this into init
         println!("{}", json!({ "meta": meta }).to_string());
