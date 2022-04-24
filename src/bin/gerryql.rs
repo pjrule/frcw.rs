@@ -1217,6 +1217,48 @@ macro_rules! bool_broadcast_op {
     };
 }
 
+
+/// Casts a generic QLValue to a float (array).
+fn float_cast(v: Option<&QLValue>) -> Option<QLValue> {
+    match v {
+        Some(QLValue::Int(v)) => Some(QLValue::Float(*v as Float)),
+        Some(QLValue::Bool(v)) => Some(QLValue::Float(bool_to_float(*v))),
+        Some(QLValue::Float(v)) => Some(QLValue::Float(*v)),
+        Some(QLValue::IntArray(v)) => Some(QLValue::FloatArray(v.map(|e| *e as Float))),
+        Some(QLValue::BoolArray(v)) => Some(QLValue::FloatArray(v.map(|e| bool_to_float(*e)))),
+        // TODO: inefficient?
+        Some(QLValue::FloatArray(v)) => Some(QLValue::FloatArray(v.clone())),
+        None => None,
+    }
+}
+
+macro_rules! float_cast_bin_op {
+    ($lhs:expr, $rhs:expr, $op:expr) => {
+        match (float_cast($lhs), float_cast($rhs)) {
+            (Some(QLValue::Float(l)), Some(QLValue::Float(r))) => Ok(QLValue::Float($op(l, r))),
+            (Some(QLValue::Float(l)), Some(QLValue::FloatArray(r))) => {
+                Ok(QLValue::FloatArray(r.map(|v| $op(l, *v))))
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::Float(r))) => {
+                Ok(QLValue::FloatArray(l.map(|v| $op(*v, r))))
+            }
+            (Some(QLValue::FloatArray(l)), Some(QLValue::FloatArray(r))) => {
+                shape_check!(
+                    &l,
+                    &r,
+                    |l: &FloatArray, r: &FloatArray| l
+                        .iter()
+                        .zip(r.iter())
+                        .map(|(v1, v2)| $op(*v1, *v2))
+                        .collect(),
+                    QLValue::FloatArray
+                )
+            }
+            _ => unreachable!(),
+        }
+    };
+}
+
 /// Fills in all values in a computation graph.
 fn eval_graph(
     graph: &mut QLComputeGraph,
@@ -1271,6 +1313,7 @@ fn eval_graph(
                     QLPrimitive::Add => bin_broadcast_op!(lhs, rhs, |a, b| a + b),
                     QLPrimitive::Sub => bin_broadcast_op!(lhs, rhs, |a, b| a - b),
                     QLPrimitive::Mult => bin_broadcast_op!(lhs, rhs, |a, b| a * b),
+                    QLPrimitive::Divide => float_cast_bin_op!(lhs, rhs, |a, b| a / b),
                     QLPrimitive::Eq => cmp_broadcast_op!(lhs, rhs, |a, b| a == b),
                     QLPrimitive::Gt => cmp_broadcast_op!(lhs, rhs, |a, b| a > b),
                     QLPrimitive::Geq => cmp_broadcast_op!(lhs, rhs, |a, b| a >= b),
@@ -1352,9 +1395,14 @@ fn eval_graph(
                         _ => Err("cannot sort non-array".to_string()),
                     },
                     /*
-                    Divide,
-                    Sort,
+                    TODO:
                     Mode,
+                    Exp,
+                    Pow,
+                    Float,
+                    Ceil,
+                    Round,
+                    Range
                     */
                     _ => Err("not implemented yet!".to_string()),
                 };
