@@ -7,7 +7,7 @@ use clap::{App, Arg};
 // use frcw::init::graph_from_networkx;
 use ndarray::prelude::*;
 use ndarray::Array1;
-// use ndarray_stats::QuantileExt;
+use ndarray_stats::QuantileExt;
 use petgraph::algo::toposort;
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -1301,20 +1301,60 @@ fn eval_graph(
                         Some(QLValue::FloatArray(v)) => Ok(QLValue::Float(v.sum())),
                         _ => Err("cannot sum non-array".to_string()),
                     },
-                    /*
                     QLPrimitive::Min => match lhs {
-                        Some(QLValue::IntArray(v)) => Ok(QLValue::Int(v.min())),
-                        Some(QLValue::BoolArray(v)) => Ok(QLValue::Int(v.map(|x| *x as Int).sum())),
-                        Some(QLValue::FloatArray(v)) => Ok(QLValue::Float(v.sum())),
-                        _ => Err("cannot sum non-array".to_string())
-                    }
+                        // TODO: better error handling here, e.g. for empty arrays.
+                        Some(QLValue::IntArray(v)) => Ok(QLValue::Int(*v.min().unwrap())),
+                        Some(QLValue::BoolArray(v)) => Ok(QLValue::Bool(*v.min().unwrap())),
+                        Some(QLValue::FloatArray(v)) => Ok(QLValue::Float(*v.min_skipnan())),
+                        _ => Err("cannot take min of non-array".to_string()),
+                    },
+                    QLPrimitive::Max => match lhs {
+                        // TODO: better error handling here, e.g. for empty arrays.
+                        Some(QLValue::IntArray(v)) => Ok(QLValue::Int(*v.max().unwrap())),
+                        Some(QLValue::BoolArray(v)) => Ok(QLValue::Bool(*v.max().unwrap())),
+                        Some(QLValue::FloatArray(v)) => Ok(QLValue::Float(*v.max_skipnan())),
+                        _ => Err("cannot take max of non-array".to_string()),
+                    },
+                    QLPrimitive::Mean => match lhs {
+                        // TODO: better error handling here, e.g. for empty arrays.
+                        Some(QLValue::IntArray(v)) => {
+                            Ok(QLValue::Float(v.map(|x| *x as Float).mean().unwrap()))
+                        }
+                        Some(QLValue::BoolArray(v)) => {
+                            Ok(QLValue::Float(v.map(|x| bool_to_float(*x)).mean().unwrap()))
+                        }
+                        Some(QLValue::FloatArray(v)) => Ok(QLValue::Float(v.mean().unwrap())),
+                        _ => Err("cannot take mean of non-array".to_string()),
+                    },
+                    QLPrimitive::Sort => match lhs {
+                        // TODO: as of 2022-04-23, sorting is not available in
+                        // the main rust-ndarray crate. However, it might be
+                        // more efficient to eventually use the ndarray
+                        // version where feasible--see
+                        // https://github.com/rust-ndarray/ndarray/blob/
+                        // 31244100631382bb8ee30721872a928bfdf07f44/examples/sort-axis.rs
+                        Some(QLValue::IntArray(v)) => {
+                            let mut v_sorted = v.to_vec();
+                            v_sorted.sort();
+                            Ok(QLValue::IntArray(Array1::from_vec(v_sorted)))
+                        }
+                        Some(QLValue::BoolArray(v)) => {
+                            let mut v_sorted = v.to_vec();
+                            v_sorted.sort();
+                            Ok(QLValue::BoolArray(Array1::from_vec(v_sorted)))
+                        }
+                        Some(QLValue::FloatArray(v)) => {
+                            let mut v_sorted = v.to_vec();
+                            // TODO: handle NaN errors, etc. better...
+                            v_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                            Ok(QLValue::FloatArray(Array1::from_vec(v_sorted)))
+                        }
+                        _ => Err("cannot sort non-array".to_string()),
+                    },
+                    /*
                     Divide,
                     Sort,
-                    Min,
-                    Max,
-                    Median,
                     Mode,
-                    Mean
                     */
                     _ => Err("not implemented yet!".to_string()),
                 };
