@@ -149,7 +149,7 @@ fn start_opt_thread(
 }
 
 /// Sends a batch of work to a ReCom optimization thread.
-fn next_batch(send: &Sender<OptJobPacket>, diff: Option<Partition>, burst_length: usize, dist_a: usize, dist_b: usize) {
+fn next_batch(send: &Sender<OptJobPacket>, diff: Option<Partition>, burst_length: usize) {
     send.send(OptJobPacket {
         n_steps: burst_length,
         diff: diff,
