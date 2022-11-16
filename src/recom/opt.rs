@@ -11,10 +11,11 @@ use crate::buffers::{SpanningTreeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
 use crate::partition::Partition;
 use crate::spanning_tree::{RMSTSampler, RegionAwareSampler, SpanningTreeSampler};
+use crate::stats::partition_attr_sums;
 use crossbeam::scope;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use serde_json::json;
 use std::collections::HashMap;
 use std::marker::Send;
@@ -29,6 +30,8 @@ struct OptJobPacket {
     diff: Option<Partition>,
     /// A sentinel used to kill the worker thread.
     terminate: bool,
+    dist_a: usize,
+    dist_b: usize,
 }
 
 /// The result of a unit of multithreaded work.
@@ -99,21 +102,17 @@ fn start_opt_thread(
         let mut score = obj_fn(&graph, &partition);
         let mut best_score: ScoreValue = score;
         let mut step = 0;
+
+        partition.subgraph_with_attr(&graph, &mut subgraph_buf, next.dist_a, next.dist_b);
         while step < next.n_steps {
             // Sample a ReCom step.
-            let dist_pair = uniform_dist_pair(&graph, &mut partition, &mut rng);
-            if dist_pair.is_none() {
-                continue;
-            }
-            let (dist_a, dist_b) = dist_pair.unwrap();
-            partition.subgraph_with_attr(&graph, &mut subgraph_buf, dist_a, dist_b);
             st_sampler.random_spanning_tree(&subgraph_buf.graph, &mut st_buf, &mut rng);
             let split = random_split(
                 &subgraph_buf.graph,
                 &mut rng,
                 &st_buf.st,
-                dist_a,
-                dist_b,
+                next.dist_a,
+                next.dist_b,
                 &mut split_buf,
                 &mut proposal_buf,
                 &subgraph_buf.raw_nodes,
@@ -147,11 +146,13 @@ fn start_opt_thread(
 }
 
 /// Sends a batch of work to a ReCom optimization thread.
-fn next_batch(send: &Sender<OptJobPacket>, diff: Option<Partition>, burst_length: usize) {
+fn next_batch(send: &Sender<OptJobPacket>, diff: Option<Partition>, burst_length: usize, dist_a: usize, dist_b: usize) {
     send.send(OptJobPacket {
         n_steps: burst_length,
         diff: diff,
         terminate: false,
+        dist_a: dist_a,
+        dist_b: dist_b
     })
     .unwrap();
 }
@@ -162,6 +163,8 @@ fn stop_opt_thread(send: &Sender<OptJobPacket>) {
         n_steps: 0,
         diff: None,
         terminate: true,
+        dist_a: 0,
+        dist_b: 0
     })
     .unwrap();
 }
@@ -189,6 +192,7 @@ pub fn multi_short_bursts(
     let node_ub = node_bound(&graph.pops, params.max_pop);
     let mut job_sends = vec![]; // main thread sends work to job threads
     let mut job_recvs = vec![]; // job threads receive work from main thread
+    let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
     for _ in 0..n_threads {
         let (s, r): (Sender<OptJobPacket>, Receiver<OptJobPacket>) = unbounded();
         job_sends.push(s);
@@ -224,7 +228,12 @@ pub fn multi_short_bursts(
 
         if params.num_steps > 0 {
             for job in job_sends.iter() {
-                next_batch(job, None, burst_length);
+                let mut dist_pair = uniform_dist_pair(&graph, &mut partition, &mut rng);
+                while dist_pair.is_none() {
+                    dist_pair = uniform_dist_pair(&graph, &mut partition, &mut rng);
+                }
+                let (dist_a, dist_b) = dist_pair.unwrap();
+                next_batch(job, None, burst_length, dist_a, dist_b);
             }
         }
 
@@ -246,8 +255,40 @@ pub fn multi_short_bursts(
                     "assignment": partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
                 }).to_string());
             }
+
+            let min_pops = partition_attr_sums(graph, &partition, "APBVAP20");
+            let total_pops = partition_attr_sums(graph, &partition, "VAP20");
+
+            let num_dists = partition.num_dists;
+            let dist_adj = partition.dist_adj(&graph);
+            let mut pair_choices = vec![];
+            let mut pair_scores = vec![];
+            for dist_a in 0..num_dists as usize {
+                for dist_b in (dist_a + 1)..num_dists as usize {
+                    if dist_adj[(dist_a * num_dists as usize) + dist_b] != 0 {
+                        let avg_min_pop = ((min_pops[dist_a] + min_pops[dist_b]) as f64) / ((total_pops[dist_a] + total_pops[dist_b]) as f64);
+                        let score = (-10.0 * (avg_min_pop - 0.5).abs()).exp();
+                        pair_choices.push((dist_a, dist_b));
+                        pair_scores.push(score);
+                    }
+                }
+            }
+            let scores_sum: f64 = pair_scores.iter().sum();
+            let pair_weights: Vec<f64> = pair_scores.iter().map(|s| s / scores_sum).collect();
+
             for job in job_sends.iter() {
-                next_batch(job, diff.clone(), burst_length);
+                let pair_prob = rng.gen();
+                let mut total = 0.0;
+                let mut pair_idx = 0;
+                while total < pair_prob {
+                    total += pair_weights[pair_idx];
+                    if total < pair_prob {
+                        pair_idx += 1;
+                    }
+                }
+                let (dist_a, dist_b) = pair_choices[pair_idx];
+                // println!("sampled pair ({}, {}) with weight {}", dist_a, dist_b, pair_weights[pair_idx]);
+                next_batch(job, diff.clone(), burst_length, dist_a, dist_b);
             }
         }
 
