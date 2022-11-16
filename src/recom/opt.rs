@@ -88,10 +88,12 @@ fn start_opt_thread(
     }
 
     let mut next: OptJobPacket = job_recv.recv().unwrap();
+    let mut start_partition = partition.clone();
     while !next.terminate {
         if next.diff.is_some() {
-            partition = next.diff.unwrap();
-        }
+            start_partition = next.diff.unwrap();
+        } 
+        partition = start_partition.clone();
 
         let mut best_partition: Option<Partition> = None;
         let mut score = obj_fn(&graph, &partition);

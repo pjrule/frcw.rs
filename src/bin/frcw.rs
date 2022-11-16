@@ -8,7 +8,8 @@ use frcw::config::parse_region_weights_config;
 use frcw::init::from_networkx;
 use frcw::recom::run::multi_chain;
 use frcw::recom::{RecomParams, RecomVariant};
-use frcw::stats::{AssignmentsOnlyWriter, JSONLWriter, PcompressWriter, StatsWriter, TSVWriter};
+use frcw::stats::{AssignmentsOnlyWriter, JSONLWriter, JSONLTwoLineWriter,
+                  PcompressWriter, StatsWriter, TSVWriter};
 use serde_json::json;
 use sha3::{Digest, Sha3_256};
 use std::path::PathBuf;
@@ -151,6 +152,7 @@ fn main() {
         "jsonl" => Box::new(JSONLWriter::new(false, st_counts, cut_edges_count)),
         "pcompress" => Box::new(PcompressWriter::new()),
         "jsonl-full" => Box::new(JSONLWriter::new(true, st_counts, cut_edges_count)),
+        "jsonl-two-line" => Box::new(JSONLTwoLineWriter::new()),
         "assignments" => Box::new(AssignmentsOnlyWriter::new(false)),
         "canonical-assignments" => Box::new(AssignmentsOnlyWriter::new(true)),
         bad => panic!("Parameter error: invalid writer '{}'", bad),
