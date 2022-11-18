@@ -64,6 +64,7 @@ fn start_opt_thread(
     buf_size: usize,
     job_recv: Receiver<OptJobPacket>,
     result_send: Sender<OptResultPacket>,
+    baseline: usize
 ) {
     // TODO: consider supporting other ReCom variants.
     // We generally don't (or can't) care about distributional
@@ -87,6 +88,7 @@ fn start_opt_thread(
     } else {
         panic!("ReCom variant not supported by optimizer.");
     }
+
 
     let mut next: OptJobPacket = job_recv.recv().unwrap();
     let mut start_partition = partition.clone();
@@ -123,7 +125,18 @@ fn start_opt_thread(
             );
             if split.is_ok() {
                 score = obj_fn(&graph, &partition);
+                let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
+                let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
+                let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
+
                 partition.update(&proposal_buf);
+                if seat_count > baseline {
+                    println!("{}", json!({
+                        "type": "bvap_improved",
+                        "bvap_maj": seat_count,
+                        "assignment": partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
+                    }).to_string());
+                }
                 if score >= best_score {
                     // TODO: reduce allocations by keeping a separate
                     // buffer for the best partition.
@@ -202,6 +215,11 @@ pub fn multi_short_bursts(
         unbounded();
     let mut score = obj_fn(&graph, &partition);
 
+    let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
+    let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
+    let baseline = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
+
+
     scope(|scope| {
         // Start optimization threads.
         for t_idx in 0..n_threads {
@@ -221,6 +239,7 @@ pub fn multi_short_bursts(
                     node_ub,
                     job_recv,
                     result_send,
+                    baseline
                 );
             });
         }
@@ -243,9 +262,15 @@ pub fn multi_short_bursts(
             }
             step += (n_threads * burst_length) as u64;
             if diff.is_some() && verbose {
+                let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
+                let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
+                let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
+
                 println!("{}", json!({
                     "step": step,
+                    "type": "opt",
                     "score": score,
+                    "bvap_maj": seat_count,
                     "assignment": partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
                 }).to_string());
             }
