@@ -8,8 +8,9 @@ use frcw::config::parse_region_weights_config;
 use frcw::init::from_networkx;
 use frcw::recom::run::multi_chain;
 use frcw::recom::{RecomParams, RecomVariant};
-use frcw::stats::{AssignmentsOnlyWriter, JSONLWriter, JSONLTwoLineWriter,
-                  PcompressWriter, StatsWriter, TSVWriter};
+use frcw::stats::{
+    AssignmentsOnlyWriter, JSONLTwoLineWriter, JSONLWriter, PcompressWriter, StatsWriter, TSVWriter,
+};
 use serde_json::json;
 use sha3::{Digest, Sha3_256};
 use std::path::PathBuf;

@@ -78,7 +78,7 @@ pub struct JSONLTwoLineWriter {}
 
 /// Hack.
 pub struct GeorgiaWriter {
-    best_count: Option<usize>
+    best_count: Option<usize>,
 }
 
 impl TSVWriter {
@@ -203,7 +203,10 @@ impl StatsWriter for TSVWriter {
 
 impl StatsWriter for JSONLTwoLineWriter {
     fn init(&mut self, graph: &Graph, partition: &Partition) -> Result<()> {
-        println!("{}", json!({ "sums": partition_sums(graph, partition) }).to_string());
+        println!(
+            "{}",
+            json!({ "sums": partition_sums(graph, partition) }).to_string()
+        );
         println!("{{\"assignments\": {:?}}}", partition.assignments);
         Ok(())
     }
@@ -216,7 +219,10 @@ impl StatsWriter for JSONLTwoLineWriter {
         _proposal: &RecomProposal,
         _counts: &SelfLoopCounts,
     ) -> Result<()> {
-        println!("{}", json!({ "sums": partition_sums(graph, partition) }).to_string());
+        println!(
+            "{}",
+            json!({ "sums": partition_sums(graph, partition) }).to_string()
+        );
         println!("{{\"assignments\": {:?}}}", partition.assignments);
         Ok(())
     }
@@ -225,7 +231,6 @@ impl StatsWriter for JSONLTwoLineWriter {
         Ok(())
     }
 }
-
 
 impl StatsWriter for GeorgiaWriter {
     fn init(&mut self, _graph: &Graph, _partition: &Partition) -> Result<()> {
@@ -243,7 +248,11 @@ impl StatsWriter for GeorgiaWriter {
         let sums = partition_sums(graph, partition);
         let dist_vaps = sums["VAP20"].clone();
         let dist_apbvaps = sums["APBVAP20"].clone();
-        let maj_min_count = dist_vaps.iter().zip(dist_apbvaps.iter()).filter(|(&v, &a)| 2 * a >= v).count();
+        let maj_min_count = dist_vaps
+            .iter()
+            .zip(dist_apbvaps.iter())
+            .filter(|(&v, &a)| 2 * a >= v)
+            .count();
         if maj_min_count > self.best_count.unwrap_or(0) {
             println!("{}\t{}\t{:?}", maj_min_count, step, partition.assignments);
             self.best_count = Some(maj_min_count);
@@ -255,7 +264,6 @@ impl StatsWriter for GeorgiaWriter {
         Ok(())
     }
 }
-
 
 impl StatsWriter for JSONLWriter {
     fn init(&mut self, graph: &Graph, partition: &Partition) -> Result<()> {

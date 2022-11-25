@@ -59,12 +59,12 @@ fn start_opt_thread(
     graph: Graph,
     mut partition: Partition,
     params: RecomParams,
-    obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+    obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy,
     rng_seed: u64,
     buf_size: usize,
     job_recv: Receiver<OptJobPacket>,
     result_send: Sender<OptResultPacket>,
-    baseline: usize
+    baseline: usize,
 ) {
     // TODO: consider supporting other ReCom variants.
     // We generally don't (or can't) care about distributional
@@ -89,13 +89,12 @@ fn start_opt_thread(
         panic!("ReCom variant not supported by optimizer.");
     }
 
-
     let mut next: OptJobPacket = job_recv.recv().unwrap();
     let mut start_partition = partition.clone();
     while !next.terminate {
         if next.diff.is_some() {
             start_partition = next.diff.unwrap();
-        } 
+        }
         partition = start_partition.clone();
 
         let mut best_partition: Option<Partition> = None;
@@ -127,7 +126,11 @@ fn start_opt_thread(
                 score = obj_fn(&graph, &partition);
                 let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
                 let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
-                let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
+                let seat_count = min_pops
+                    .iter()
+                    .zip(total_pops.iter())
+                    .filter(|(&m, &t)| 2 * m >= t)
+                    .count();
 
                 partition.update(&proposal_buf);
                 if seat_count > baseline {
@@ -217,8 +220,11 @@ pub fn multi_short_bursts(
 
     let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
     let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
-    let baseline = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
-
+    let baseline = min_pops
+        .iter()
+        .zip(total_pops.iter())
+        .filter(|(&m, &t)| 2 * m >= t)
+        .count();
 
     scope(|scope| {
         // Start optimization threads.

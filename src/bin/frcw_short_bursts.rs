@@ -18,16 +18,10 @@ use std::marker::Send;
 use std::path::PathBuf;
 use std::{fs, io};
 
-fn make_objective_fn(
+fn make_gingles_partial(
     objective_config: &str,
 ) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy {
     let data: Value = serde_json::from_str(objective_config).unwrap();
-    let obj_type = data["objective"].as_str().unwrap();
-
-    // For now, we only support Gingles optimization with next-partial-district
-    // augmentation. see https://github.com/vrdi/shortbursts-gingles/blob/
-    // d9fb26ec313cd93ac80171b23095c4f3dfab0422/state_experiments/gingleator.py#L253
-    assert!(obj_type == "gingles_partial");
     let threshold = data["threshold"].as_f64().unwrap();
     assert!(threshold > 0.0 && threshold < 1.0);
 
@@ -71,6 +65,90 @@ fn make_objective_fn(
             None => 0.0,
         };
         opportunity_count as f64 + (next_highest / threshold)
+    }
+}
+
+
+fn make_gingles_coalition(
+    objective_config: &str,
+) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy {
+    let data: Value = serde_json::from_str(objective_config).unwrap();
+    let threshold = data["threshold"].as_f64().unwrap();
+    assert!(threshold > 0.0 && threshold < 1.0);
+
+    // A hack to share strings between threads:
+    // https://stackoverflow.com/a/52367953
+    let min_pop_col = &*Box::leak(
+        data["min_pop"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+            .into_boxed_str(),
+    );
+    let total_pop_col = &*Box::leak(
+        data["total_pop"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+            .into_boxed_str(),
+    );
+    let coalition_pop_col = &*Box::leak(
+        data["coalition_pop"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+            .into_boxed_str(),
+    );
+
+    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+        let min_pops = partition_attr_sums(graph, partition, min_pop_col);
+        let total_pops = partition_attr_sums(graph, partition, total_pop_col);
+        let coalition_pops = partition_attr_sums(graph, partition, coalition_pop_col);
+        let min_shares: Vec<f64> = min_pops
+            .iter()
+            .zip(total_pops.iter())
+            .map(|(&m, &t)| m as f64 / t as f64)
+            .collect();
+        let coalition_shares: Vec<f64> = coalition_pops
+            .iter()
+            .zip(total_pops.iter())
+            .map(|(&c, &t)| c as f64 / t as f64)
+            .collect();
+
+        let min_count = min_shares.iter().filter(|&s| s >= &threshold).count();
+        let coalition_no_min_count = min_shares
+            .iter()
+            .zip(coalition_shares.iter())
+            .filter(|(&ms, &cs)| ms < threshold && cs >= threshold)
+            .count();
+
+        // partial ordering on f64:
+        // see https://www.reddit.com/r/rust/comments/29kia3/no_ord_for_f32/
+        // see https://doc.rust-lang.org/std/vec/struct.Vec.html#method.sort_by
+        let mut min_sorted_below = min_shares
+            .into_iter()
+            .filter(|s| s < &threshold)
+            .collect::<Vec<f64>>();
+        min_sorted_below.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let next_highest_min = match min_sorted_below.last() {
+            Some(&v) => v,
+            None => 0.0,
+        };
+
+        let mut coalition_sorted_below = coalition_shares
+            .into_iter()
+            .filter(|s| s < &threshold)
+            .collect::<Vec<f64>>();
+        coalition_sorted_below.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let next_highest_coalition = match coalition_sorted_below.last() {
+            Some(&v) => v,
+            None => 0.0,
+        };
+
+        min_count as f64
+            + (0.75 * coalition_no_min_count as f64)
+            + next_highest_min
+            + next_highest_coalition
     }
 }
 
@@ -173,8 +251,16 @@ fn main() {
         .unwrap_or_default()
         .map(|c| c.to_string())
         .collect();
+
     let objective_config = matches.value_of("objective").unwrap();
-    let objective_fn = make_objective_fn(objective_config);
+    let obj_data: Value = serde_json::from_str(objective_config).unwrap();
+    let obj_type = obj_data["objective"].as_str().unwrap();
+    let objective_fn: Box<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Copy> = match obj_type {
+        "gingles_partial"   => Box::new(make_gingles_partial(objective_config)),
+        "gingles_coalition" => Box::new(make_gingles_coalition(objective_config)),
+        _                   => panic!("unknown objective :("),
+    };
+
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
 
