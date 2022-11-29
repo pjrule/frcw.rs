@@ -1,4 +1,4 @@
-//! Short bursts optimization CLI for frcw.
+//! Optimization CLI for frcw.
 use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -8,7 +8,7 @@ use frcw::config::parse_region_weights_config;
 use frcw::graph::Graph;
 use frcw::init::from_networkx;
 use frcw::partition::Partition;
-use frcw::recom::opt::{multi_short_bursts, ScoreValue};
+use frcw::recom::opt::{Optimizer, ParallelTemperingOptimizer, ShortBurstsOptimizer, ScoreValue};
 use frcw::recom::{RecomParams, RecomVariant};
 use frcw::stats::partition_attr_sums;
 use serde_json::json;
@@ -67,7 +67,6 @@ fn make_gingles_partial(
         opportunity_count as f64 + (next_highest / threshold)
     }
 }
-
 
 fn make_gingles_coalition(
     objective_config: &str,
@@ -153,10 +152,10 @@ fn make_gingles_coalition(
 }
 
 fn main() {
-    let cli = App::new("frcw_short_bursts")
-        .version("0.1.0")
+    let cli = App::new("frcw_opt")
+        .version("0.1.1")
         .author("Parker J. Rule <parker.rule@tufts.edu>")
-        .about("A short bursts optimizer for redistricting")
+        .about("An  optimizer for redistricting")
         .arg(
             Arg::with_name("graph_json")
                 .long("graph-json")
@@ -203,15 +202,21 @@ fn main() {
             Arg::with_name("n_threads")
                 .long("n-threads")
                 .takes_value(true)
-                .required(true)
-                .help("The number of threads to use."),
+                .help("The number of threads to use (short bursts mode)."),
+        )
+        .arg(
+            Arg::with_name("temperatures")
+                .long("temperatures")
+                .takes_value(true)
+                .multiple(true)
+                .help("The temperatures to use (tempering mode)."),
         )
         .arg(
             Arg::with_name("burst_length")
                 .long("burst-length")
                 .takes_value(true)
                 .required(true)
-                .help("The number of accepted steps per short burst."),
+                .help("The number of accepted steps per batch (short bursts/tempering)."),
         )
         .arg(
             Arg::with_name("sum_cols")
@@ -231,6 +236,13 @@ fn main() {
                 .long("region-weights")
                 .takes_value(true)
                 .help("Region columns with weights for region-aware ReCom."),
+        )
+        .arg(
+            Arg::with_name("optimizer")
+                .long("optimizer")
+                .takes_value(true)
+                .default_value("short_bursts")
+                .help("The optimizer to use (options: short_bursts, tempering)."),
         );
     let matches = cli.get_matches();
     let n_steps = value_t!(matches.value_of("n_steps"), u64).unwrap_or_else(|e| e.exit());
@@ -255,14 +267,15 @@ fn main() {
     let objective_config = matches.value_of("objective").unwrap();
     let obj_data: Value = serde_json::from_str(objective_config).unwrap();
     let obj_type = obj_data["objective"].as_str().unwrap();
-    let objective_fn: Box<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Copy> = match obj_type {
-        "gingles_partial"   => Box::new(make_gingles_partial(objective_config)),
-        "gingles_coalition" => Box::new(make_gingles_coalition(objective_config)),
-        _                   => panic!("unknown objective :("),
-    };
-
+    let objective_fn = make_gingles_partial(objective_config);
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
+    let optimizer_name = matches.value_of("optimizer").unwrap();
+    let temperatures: Vec<f64> = matches
+        .values_of("temperatures")
+        .unwrap_or_default()
+        .map(|c| c.parse::<f64>().unwrap())
+        .collect();
 
     assert!(tol >= 0.0 && tol <= 1.0);
 
@@ -305,13 +318,23 @@ fn main() {
             .insert("region_weights".to_string(), json!(region_weights));
     }
     println!("{}", json!({ "meta": meta }).to_string());
-    multi_short_bursts(
-        &graph,
-        partition,
-        &params,
-        n_threads,
-        objective_fn,
-        burst_length,
-        true,
-    );
+
+    if optimizer_name == "short_bursts" {
+        ShortBurstsOptimizer::new(
+            params,
+            n_threads,
+            burst_length,
+            true
+        ).optimize(&graph, partition, objective_fn);
+    } else if optimizer_name == "tempering" {
+        assert!(temperatures.len() > 0);
+        ParallelTemperingOptimizer::new(
+            params,
+            temperatures,
+            burst_length,
+            true
+        ).optimize(&graph, partition, objective_fn);
+    } else {
+        panic!("Unknown optimizer.");
+    }
 }

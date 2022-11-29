@@ -4,9 +4,10 @@
 //! (see "Voting Rights, Markov Chains, and Optimization by Short Bursts",
 //!  arXiv: 2011.02288) to maximize arbitrary partition-level objective
 //! functions.
-use super::{
+use super::super::{
     node_bound, random_split, uniform_dist_pair, RecomParams, RecomProposal, RecomVariant,
 };
+use super::{Optimizer, ScoreValue};
 use crate::buffers::{SpanningTreeBuffer, SplitBuffer, SubgraphBuffer};
 use crate::graph::Graph;
 use crate::partition::Partition;
@@ -15,11 +16,10 @@ use crate::stats::partition_attr_sums;
 use crossbeam::scope;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::SeedableRng;
 use serde_json::json;
 use std::collections::HashMap;
 use std::marker::Send;
-pub type ScoreValue = f64;
 
 /// A unit of multithreaded work.
 struct OptJobPacket {
@@ -64,7 +64,6 @@ fn start_opt_thread(
     buf_size: usize,
     job_recv: Receiver<OptJobPacket>,
     result_send: Sender<OptResultPacket>,
-    baseline: usize,
 ) {
     // TODO: consider supporting other ReCom variants.
     // We generally don't (or can't) care about distributional
@@ -124,22 +123,7 @@ fn start_opt_thread(
             );
             if split.is_ok() {
                 score = obj_fn(&graph, &partition);
-                let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
-                let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
-                let seat_count = min_pops
-                    .iter()
-                    .zip(total_pops.iter())
-                    .filter(|(&m, &t)| 2 * m >= t)
-                    .count();
-
                 partition.update(&proposal_buf);
-                if seat_count > baseline {
-                    println!("{}", json!({
-                        "type": "bvap_improved",
-                        "bvap_maj": seat_count,
-                        "assignment": partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
-                    }).to_string());
-                }
                 if score >= best_score {
                     // TODO: reduce allocations by keeping a separate
                     // buffer for the best partition.
@@ -184,113 +168,126 @@ fn stop_opt_thread(send: &Sender<OptJobPacket>) {
     .unwrap();
 }
 
-/// Runs a multi-threaded ReCom short bursts optimizer.
-///
-/// # Arguments
-///
-/// * `graph` - The graph associated with `partition`.
-/// * `partition` - The partition to start the chain run from (updated in place).
-/// * `writer` - The statistics writer.
-/// * `params` - The parameters of the ReCom chain runs.
-/// * `n_threads` - The number of worker threads (excluding the main thread).
-/// * `burst_length` - The number of steps per burst.
-pub fn multi_short_bursts(
-    graph: &Graph,
-    mut partition: Partition,
-    params: &RecomParams,
+pub struct ShortBurstsOptimizer {
+    /// Chain parameters.
+    params: RecomParams,
+    /// The number of worker threads (excluding the main thread).
     n_threads: usize,
-    obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+    /// The number of steps per burst.
     burst_length: usize,
+    /// Print the best intermediate results?
     verbose: bool,
-) -> Partition {
-    let mut step = 0;
-    let node_ub = node_bound(&graph.pops, params.max_pop);
-    let mut job_sends = vec![]; // main thread sends work to job threads
-    let mut job_recvs = vec![]; // job threads receive work from main thread
-    let mut rng: SmallRng = SeedableRng::seed_from_u64(params.rng_seed);
-    for _ in 0..n_threads {
-        let (s, r): (Sender<OptJobPacket>, Receiver<OptJobPacket>) = unbounded();
-        job_sends.push(s);
-        job_recvs.push(r);
+}
+
+impl ShortBurstsOptimizer {
+    pub fn new(
+        params: RecomParams,
+        n_threads: usize,
+        burst_length: usize,
+        verbose: bool,
+    ) -> ShortBurstsOptimizer {
+        ShortBurstsOptimizer {
+            params: params,
+            n_threads: n_threads,
+            burst_length: burst_length,
+            verbose: verbose,
+        }
     }
-    // All optimization threads send a summary of chain results back to the main thread.
-    let (result_send, result_recv): (Sender<OptResultPacket>, Receiver<OptResultPacket>) =
-        unbounded();
-    let mut score = obj_fn(&graph, &partition);
+}
 
-    let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
-    let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
-    let baseline = min_pops
-        .iter()
-        .zip(total_pops.iter())
-        .filter(|(&m, &t)| 2 * m >= t)
-        .count();
-
-    scope(|scope| {
-        // Start optimization threads.
-        for t_idx in 0..n_threads {
-            // TODO: is this (+ t_idx) a sensible way to seed?
-            let rng_seed = params.rng_seed + t_idx as u64 + 1;
-            let job_recv = job_recvs[t_idx].clone();
-            let result_send = result_send.clone();
-            let partition = partition.clone();
-
-            scope.spawn(move |_| {
-                start_opt_thread(
-                    graph.clone(),
-                    partition,
-                    params.clone(),
-                    obj_fn,
-                    rng_seed,
-                    node_ub,
-                    job_recv,
-                    result_send,
-                    baseline
-                );
-            });
+impl Optimizer for ShortBurstsOptimizer {
+    /// Runs a multi-threaded ReCom short bursts optimizer.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph` - The graph associated with `partition`.
+    /// * `partition` - The partition to start the chain run from (updated in place).
+    /// * `obj_fn` - The objective to maximize.
+    fn optimize(
+        &self,
+        graph: &Graph,
+        mut partition: Partition,
+        obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+    ) -> Partition {
+        let mut step = 0;
+        let node_ub = node_bound(&graph.pops, self.params.max_pop);
+        let mut job_sends = vec![]; // main thread sends work to job threads
+        let mut job_recvs = vec![]; // job threads receive work from main thread
+        for _ in 0..self.n_threads {
+            let (s, r): (Sender<OptJobPacket>, Receiver<OptJobPacket>) = unbounded();
+            job_sends.push(s);
+            job_recvs.push(r);
         }
+        // All optimization threads send a summary of chain results back to the main thread.
+        let (result_send, result_recv): (Sender<OptResultPacket>, Receiver<OptResultPacket>) =
+            unbounded();
+        let mut score = obj_fn(&graph, &partition);
 
-        if params.num_steps > 0 {
-            for job in job_sends.iter() {
-                next_batch(job, None, burst_length);
+        scope(|scope| {
+            // Start optimization threads.
+            for t_idx in 0..self.n_threads {
+                // TODO: is this (+ t_idx) a sensible way to seed?
+                let rng_seed = self.params.rng_seed + t_idx as u64 + 1;
+                let job_recv = job_recvs[t_idx].clone();
+                let result_send = result_send.clone();
+                let partition = partition.clone();
+
+                scope.spawn(move |_| {
+                    start_opt_thread(
+                        graph.clone(),
+                        partition,
+                        self.params.clone(),
+                        obj_fn,
+                        rng_seed,
+                        node_ub,
+                        job_recv,
+                        result_send,
+                    );
+                });
             }
-        }
 
-        while step <= params.num_steps {
-            let mut diff = None;
-            for _ in 0..n_threads {
-                let packet: OptResultPacket = result_recv.recv().unwrap();
-                if packet.best_partition.is_some() && packet.best_score.unwrap() >= score {
-                    partition = packet.best_partition.unwrap();
-                    score = packet.best_score.unwrap();
-                    diff = Some(partition.clone());
+            if self.params.num_steps > 0 {
+                for job in job_sends.iter() {
+                    next_batch(job, None, self.burst_length);
                 }
             }
-            step += (n_threads * burst_length) as u64;
-            if diff.is_some() && verbose {
-                let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
-                let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
-                let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
 
-                println!("{}", json!({
-                    "step": step,
-                    "type": "opt",
-                    "score": score,
-                    "bvap_maj": seat_count,
-                    "assignment": partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
-                }).to_string());
+            while step <= self.params.num_steps {
+                let mut diff = None;
+                for _ in 0..self.n_threads {
+                    let packet: OptResultPacket = result_recv.recv().unwrap();
+                    if packet.best_partition.is_some() && packet.best_score.unwrap() >= score {
+                        partition = packet.best_partition.unwrap();
+                        score = packet.best_score.unwrap();
+                        diff = Some(partition.clone());
+                    }
+                }
+                step += (self.n_threads * self.burst_length) as u64;
+                if diff.is_some() && self.verbose {
+                    let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
+                    let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
+                    let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
+
+                    println!("{}", json!({
+                        "step": step,
+                        "type": "opt",
+                        "score": score,
+                        "bvap_maj": seat_count,
+                        "assignment": partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
+                    }).to_string());
+                }
+
+                for job in job_sends.iter() {
+                    next_batch(job, diff.clone(), self.burst_length);
+                }
             }
 
+            // Terminate worker threads.
             for job in job_sends.iter() {
-                next_batch(job, diff.clone(), burst_length);
+                stop_opt_thread(job);
             }
-        }
-
-        // Terminate worker threads.
-        for job in job_sends.iter() {
-            stop_opt_thread(job);
-        }
-        partition
-    })
-    .unwrap()
+            partition
+        })
+        .unwrap()
+    }
 }
