@@ -270,7 +270,7 @@ impl Optimizer for ParallelTemperingOptimizer {
                 for _ in 0..n_threads {
                     let packet: OptResultPacket = result_recv.recv().unwrap();
                     last_steps.push((packet.last_partition, packet.last_score, packet.temperature));
-                    if packet.best_partition.is_some() && packet.best_score.unwrap() >= best_score {
+                    if packet.best_partition.is_some() && packet.best_score.unwrap() > best_score {
                         best_score = packet.best_score.unwrap();
                         best_partition = packet.best_partition.unwrap();
                         if self.verbose {
@@ -283,7 +283,7 @@ impl Optimizer for ParallelTemperingOptimizer {
                                 "type": "opt",
                                 "score": best_score,
                                 "bvap_maj": seat_count,
-                                //"assignment": packet.best_partition.unwrap().assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
+                                "assignment": best_partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
                             }).to_string());
                         }
                     }
@@ -296,7 +296,6 @@ impl Optimizer for ParallelTemperingOptimizer {
                 let d_energy = last_steps[r_idx + 1].1 - last_steps[r_idx].1;
                 let prob_swap = (d_inv_temp * d_energy).exp();
                 if rng.gen::<f64>() < prob_swap {
-                    println!("swapping... {} {} {} {}", r_idx, d_inv_temp, d_energy, prob_swap);
                     let (partition_a, score_a, temp_a) = last_steps[r_idx].clone();
                     let (partition_b, score_b, temp_b) = last_steps[r_idx + 1].clone();
                     last_steps[r_idx] = (partition_b, score_b, temp_a);
@@ -313,7 +312,7 @@ impl Optimizer for ParallelTemperingOptimizer {
             for job in job_sends.iter() {
                 stop_opt_thread(job);
             }
-            partition
+            best_partition
         })
         .unwrap()
     }

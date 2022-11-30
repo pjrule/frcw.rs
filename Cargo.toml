@@ -38,7 +38,7 @@ harness = false
 [profile.dev]
 split-debuginfo = "unpacked"
 debug = true
-opt-level = 3
+opt-level = 1
 
 [profile.release]
 debug = false
