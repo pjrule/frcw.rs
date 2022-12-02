@@ -265,14 +265,17 @@ impl Optimizer for ParallelTemperingOptimizer {
                 }
             }
 
+            let mut unimproved_cycles = 0;
             while step <= self.params.num_steps {
                 let mut last_steps = vec![];
+                let mut improved = false;
                 for _ in 0..n_threads {
                     let packet: OptResultPacket = result_recv.recv().unwrap();
                     last_steps.push((packet.last_partition, packet.last_score, packet.temperature));
                     if packet.best_partition.is_some() && packet.best_score.unwrap() > best_score {
                         best_score = packet.best_score.unwrap();
                         best_partition = packet.best_partition.unwrap();
+                        improved = true;
                         if self.verbose {
                             // TODO: remove (use a callback instead).
                             let min_pops = partition_attr_sums(&graph, &best_partition, "APBVAP20");
@@ -288,21 +291,33 @@ impl Optimizer for ParallelTemperingOptimizer {
                         }
                     }
                 }
+                step += (n_threads * self.steps_per_swap) as u64;
 
-                // Probabilistic replica exchange: swap an adjacent temperature pair at random.
-                last_steps.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
-                let r_idx = rng.gen_range(0..n_threads - 1);
-                let d_inv_temp = (1.0 / last_steps[r_idx].2) - (1.0 / last_steps[r_idx + 1].2);
-                let d_energy = last_steps[r_idx + 1].1 - last_steps[r_idx].1;
-                let prob_swap = (d_inv_temp * d_energy).exp();
-                if rng.gen::<f64>() < prob_swap {
-                    let (partition_a, score_a, temp_a) = last_steps[r_idx].clone();
-                    let (partition_b, score_b, temp_b) = last_steps[r_idx + 1].clone();
-                    last_steps[r_idx] = (partition_b, score_b, temp_a);
-                    last_steps[r_idx + 1] = (partition_a, score_a, temp_b);
+                if !improved {
+                    unimproved_cycles += 1;
+                }
+                if unimproved_cycles > 1000 {
+                    // Aggressive exchange: everyone gets the best plan.
+                    println!("reset...");
+                    for (idx, temperature) in self.temps.iter().enumerate() {
+                        last_steps[idx] = (best_partition.clone(), best_score, *temperature);
+                    }
+                    unimproved_cycles = 0;
+                } else {
+                    // Probabilistic replica exchange: swap an adjacent temperature pair at random.
+                    last_steps.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+                    let r_idx = rng.gen_range(0..n_threads - 1);
+                    let d_inv_temp = (1.0 / last_steps[r_idx].2) - (1.0 / last_steps[r_idx + 1].2);
+                    let d_energy = last_steps[r_idx + 1].1 - last_steps[r_idx].1;
+                    let prob_swap = (d_inv_temp * d_energy).exp();
+                    if rng.gen::<f64>() < prob_swap {
+                        let (partition_a, score_a, temp_a) = last_steps[r_idx].clone();
+                        let (partition_b, score_b, temp_b) = last_steps[r_idx + 1].clone();
+                        last_steps[r_idx] = (partition_b, score_b, temp_a);
+                        last_steps[r_idx + 1] = (partition_a, score_a, temp_b);
+                    }
                 }
 
-                step += (n_threads * self.steps_per_swap) as u64;
                 for (job, (partition, _, temperature)) in job_sends.iter().zip(last_steps.iter()) {
                     next_batch(job, self.steps_per_swap, partition.clone(), *temperature);
                 }
