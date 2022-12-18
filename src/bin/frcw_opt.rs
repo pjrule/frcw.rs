@@ -8,7 +8,7 @@ use frcw::config::parse_region_weights_config;
 use frcw::graph::Graph;
 use frcw::init::from_networkx;
 use frcw::partition::Partition;
-use frcw::recom::opt::{Optimizer, ParallelTemperingOptimizer, ShortBurstsOptimizer, ScoreValue};
+use frcw::recom::opt::{Optimizer, ParallelTemperingOptimizer, ScoreValue, ShortBurstsOptimizer};
 use frcw::recom::{RecomParams, RecomVariant};
 use frcw::stats::partition_attr_sums;
 use serde_json::json;
@@ -20,7 +20,7 @@ use std::{fs, io};
 
 fn make_gingles_partial(
     objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy {
+) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
     let data: Value = serde_json::from_str(objective_config).unwrap();
     let threshold = data["threshold"].as_f64().unwrap();
     assert!(threshold > 0.0 && threshold < 1.0);
@@ -70,7 +70,7 @@ fn make_gingles_partial(
 
 fn make_gingles_coalition(
     objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy {
+) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
     let data: Value = serde_json::from_str(objective_config).unwrap();
     let threshold = data["threshold"].as_f64().unwrap();
     assert!(threshold > 0.0 && threshold < 1.0);
@@ -148,6 +148,62 @@ fn make_gingles_coalition(
             + (0.75 * coalition_no_min_count as f64)
             + next_highest_min
             + next_highest_coalition
+    }
+}
+
+fn make_effectiveness(
+    objective_config: &str,
+) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
+    let data: Value = serde_json::from_str(objective_config).unwrap();
+
+    let elections = data["elections"].as_object().unwrap();
+    let primaries = elections["primaries"].as_array().unwrap();
+    let generals = elections["generals"].as_array().unwrap();
+    let primary_cutoff = elections["primary_cutoff"].as_u64().unwrap() as usize;
+    let general_cutoff = elections["general_cutoff"].as_u64().unwrap() as usize;
+
+    let primary_pairs: Vec<(String, String)> = primaries.iter().map(|primary| {
+        let pref_col = primary["preferred"].as_str().unwrap().to_owned();
+        let other_col = primary["other"].as_str().unwrap().to_owned();
+        (pref_col, other_col)
+    }).collect();
+    let general_pairs: Vec<(String, String)> = generals.iter().map(|general| {
+        let pref_col = general["preferred"].as_str().unwrap().to_owned();
+        let other_col = general["other"].as_str().unwrap().to_owned();
+        (pref_col, other_col)
+    }).collect();
+
+    let primary_pairs_sh = &*Box::leak(Box::new(primary_pairs));
+    let general_pairs_sh = &*Box::leak(Box::new(general_pairs));
+
+    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+        let mut primary_counts = vec![0; partition.num_dists as usize];
+        let mut general_counts = vec![0; partition.num_dists as usize];
+        
+        for (pref_col, other_col) in primary_pairs_sh.iter() {
+            let pref_sums = partition_attr_sums(graph, partition, pref_col);
+            let other_sums = partition_attr_sums(graph, partition, other_col);
+            for (dist, (p, o)) in pref_sums.iter().zip(other_sums.iter()).enumerate() {
+                if p >= o {
+                    general_counts[dist] += 1;
+                }
+            }
+        }
+        for (pref_col, other_col) in general_pairs_sh.iter() {
+            let pref_sums = partition_attr_sums(graph, partition, pref_col);
+            let other_sums = partition_attr_sums(graph, partition, other_col);
+            for (dist, (p, o)) in pref_sums.iter().zip(other_sums.iter()).enumerate() {
+                if p >= o {
+                    general_counts[dist] += 1;
+                }
+            }
+        }
+
+        primary_counts
+            .iter()
+            .zip(general_counts.iter())
+            .map(|(pc, gc)| *pc >= primary_cutoff && *gc >= general_cutoff)
+            .count() as f64
     }
 }
 
@@ -267,7 +323,7 @@ fn main() {
     let objective_config = matches.value_of("objective").unwrap();
     let obj_data: Value = serde_json::from_str(objective_config).unwrap();
     let obj_type = obj_data["objective"].as_str().unwrap();
-    let objective_fn = make_gingles_partial(objective_config);
+    let objective_fn = make_effectiveness(objective_config);
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
     let optimizer_name = matches.value_of("optimizer").unwrap();
@@ -320,20 +376,18 @@ fn main() {
     println!("{}", json!({ "meta": meta }).to_string());
 
     if optimizer_name == "short_bursts" {
-        ShortBurstsOptimizer::new(
-            params,
-            n_threads,
-            burst_length,
-            true
-        ).optimize(&graph, partition, objective_fn);
+        ShortBurstsOptimizer::new(params, n_threads, burst_length, true).optimize(
+            &graph,
+            partition,
+            objective_fn,
+        );
     } else if optimizer_name == "tempering" {
         assert!(temperatures.len() > 0);
-        ParallelTemperingOptimizer::new(
-            params,
-            temperatures,
-            burst_length,
-            true
-        ).optimize(&graph, partition, objective_fn);
+        ParallelTemperingOptimizer::new(params, temperatures, burst_length, true).optimize(
+            &graph,
+            partition,
+            objective_fn,
+        );
     } else {
         panic!("Unknown optimizer.");
     }
