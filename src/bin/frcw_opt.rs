@@ -162,30 +162,38 @@ fn make_effectiveness(
     let primary_cutoff = elections["primary_cutoff"].as_u64().unwrap() as usize;
     let general_cutoff = elections["general_cutoff"].as_u64().unwrap() as usize;
 
-    let primary_pairs: Vec<(String, String)> = primaries.iter().map(|primary| {
-        let pref_col = primary["preferred"].as_str().unwrap().to_owned();
-        let other_col = primary["other"].as_str().unwrap().to_owned();
-        (pref_col, other_col)
-    }).collect();
-    let general_pairs: Vec<(String, String)> = generals.iter().map(|general| {
-        let pref_col = general["preferred"].as_str().unwrap().to_owned();
-        let other_col = general["other"].as_str().unwrap().to_owned();
-        (pref_col, other_col)
-    }).collect();
+    let primary_pairs: Vec<(String, String)> = primaries
+        .iter()
+        .map(|primary| {
+            let pref_col = primary["preferred"].as_str().unwrap().to_owned();
+            let other_col = primary["other"].as_str().unwrap().to_owned();
+            (pref_col, other_col)
+        })
+        .collect();
+    let general_pairs: Vec<(String, String)> = generals
+        .iter()
+        .map(|general| {
+            let pref_col = general["preferred"].as_str().unwrap().to_owned();
+            let other_col = general["other"].as_str().unwrap().to_owned();
+            (pref_col, other_col)
+        })
+        .collect();
 
     let primary_pairs_sh = &*Box::leak(Box::new(primary_pairs));
     let general_pairs_sh = &*Box::leak(Box::new(general_pairs));
+    let num_primaries = primary_pairs_sh.len() as f64;
+    let num_generals = primary_pairs_sh.len() as f64;
 
     move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let mut primary_counts = vec![0; partition.num_dists as usize];
         let mut general_counts = vec![0; partition.num_dists as usize];
-        
+
         for (pref_col, other_col) in primary_pairs_sh.iter() {
             let pref_sums = partition_attr_sums(graph, partition, pref_col);
             let other_sums = partition_attr_sums(graph, partition, other_col);
             for (dist, (p, o)) in pref_sums.iter().zip(other_sums.iter()).enumerate() {
                 if p >= o {
-                    general_counts[dist] += 1;
+                    primary_counts[dist] += 1;
                 }
             }
         }
@@ -199,11 +207,23 @@ fn make_effectiveness(
             }
         }
 
-        primary_counts
+        let cutoff_count = primary_counts
             .iter()
             .zip(general_counts.iter())
-            .map(|(pc, gc)| *pc >= primary_cutoff && *gc >= general_cutoff)
-            .count() as f64
+            .filter(|(pc, gc)| **pc >= primary_cutoff && **gc >= general_cutoff)
+            .count() as f64;
+        let mut partials: Vec<f64> = primary_counts
+            .iter()
+            .zip(general_counts.iter())
+            .filter(|(pc, gc)| **pc < primary_cutoff || **gc < general_cutoff)
+            .map(|(pc, gc)| (*pc / num_primaries) * (*gc / num_generals))
+            .collect();
+        partials.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let highest_partial = match partials.last() {
+            Some(&v) => v,
+            None => 0.0,
+        };
+        cutoff_count + highest_partial
     }
 }
 
@@ -320,10 +340,15 @@ fn main() {
         .map(|c| c.to_string())
         .collect();
 
-    let objective_config = matches.value_of("objective").unwrap();
-    let obj_data: Value = serde_json::from_str(objective_config).unwrap();
+    let objective_config = matches
+        .value_of("objective")
+        .unwrap()
+        .replace("\\{", "{")
+        .replace("\\}", "}")
+        .replace("\\\"", "\"");
+    let obj_data: Value = serde_json::from_str(&objective_config).unwrap();
     let obj_type = obj_data["objective"].as_str().unwrap();
-    let objective_fn = make_effectiveness(objective_config);
+    let objective_fn = make_effectiveness(&objective_config);
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
     let optimizer_name = matches.value_of("optimizer").unwrap();
