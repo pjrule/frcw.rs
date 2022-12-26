@@ -4,214 +4,22 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{value_t, App, Arg};
+use anyhow::Result;
 use frcw::config::parse_region_weights_config;
-use frcw::graph::Graph;
 use frcw::init::from_networkx;
-use frcw::partition::Partition;
 use frcw::recom::opt::{Optimizer, ParallelTemperingOptimizer, ScoreValue, ShortBurstsOptimizer};
 use frcw::recom::{RecomParams, RecomVariant};
-use frcw::stats::partition_attr_sums;
 use serde_json::json;
 use serde_json::Value;
 use sha3::{Digest, Sha3_256};
-use std::marker::Send;
 use std::path::PathBuf;
 use std::{fs, io};
 
-fn make_gingles_partial(
-    objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
-    let data: Value = serde_json::from_str(objective_config).unwrap();
-    let threshold = data["threshold"].as_f64().unwrap();
-    assert!(threshold > 0.0 && threshold < 1.0);
-
-    // A hack to share strings between threads:
-    // https://stackoverflow.com/a/52367953
-    let min_pop_col = &*Box::leak(
-        data["min_pop"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-            .into_boxed_str(),
-    );
-    let total_pop_col = &*Box::leak(
-        data["total_pop"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-            .into_boxed_str(),
-    );
-
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
-        let min_pops = partition_attr_sums(graph, partition, min_pop_col);
-        let total_pops = partition_attr_sums(graph, partition, total_pop_col);
-        let shares: Vec<f64> = min_pops
-            .iter()
-            .zip(total_pops.iter())
-            .map(|(&m, &t)| m as f64 / t as f64)
-            .collect();
-        let opportunity_count = shares.iter().filter(|&s| s >= &threshold).count();
-
-        // partial ordering on f64:
-        // see https://www.reddit.com/r/rust/comments/29kia3/no_ord_for_f32/
-        // see https://doc.rust-lang.org/std/vec/struct.Vec.html#method.sort_by
-        let mut sorted_below = shares
-            .into_iter()
-            .filter(|s| s < &threshold)
-            .collect::<Vec<f64>>();
-        sorted_below.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let next_highest = match sorted_below.last() {
-            Some(&v) => v,
-            None => 0.0,
-        };
-        opportunity_count as f64 + (next_highest / threshold)
-    }
-}
-
-fn make_gingles_coalition(
-    objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
-    let data: Value = serde_json::from_str(objective_config).unwrap();
-    let threshold = data["threshold"].as_f64().unwrap();
-    assert!(threshold > 0.0 && threshold < 1.0);
-
-    // A hack to share strings between threads:
-    // https://stackoverflow.com/a/52367953
-    let min_pop_col = &*Box::leak(
-        data["min_pop"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-            .into_boxed_str(),
-    );
-    let total_pop_col = &*Box::leak(
-        data["total_pop"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-            .into_boxed_str(),
-    );
-    let coalition_pop_col = &*Box::leak(
-        data["coalition_pop"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-            .into_boxed_str(),
-    );
-
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
-        let min_pops = partition_attr_sums(graph, partition, min_pop_col);
-        let total_pops = partition_attr_sums(graph, partition, total_pop_col);
-        let coalition_pops = partition_attr_sums(graph, partition, coalition_pop_col);
-        let min_shares: Vec<f64> = min_pops
-            .iter()
-            .zip(total_pops.iter())
-            .map(|(&m, &t)| m as f64 / t as f64)
-            .collect();
-        let coalition_shares: Vec<f64> = coalition_pops
-            .iter()
-            .zip(total_pops.iter())
-            .map(|(&c, &t)| c as f64 / t as f64)
-            .collect();
-
-        let min_count = min_shares.iter().filter(|&s| s >= &threshold).count();
-        let coalition_no_min_count = min_shares
-            .iter()
-            .zip(coalition_shares.iter())
-            .filter(|(&ms, &cs)| ms < threshold && cs >= threshold)
-            .count();
-
-        // partial ordering on f64:
-        // see https://www.reddit.com/r/rust/comments/29kia3/no_ord_for_f32/
-        // see https://doc.rust-lang.org/std/vec/struct.Vec.html#method.sort_by
-        let mut min_sorted_below = min_shares
-            .into_iter()
-            .filter(|s| s < &threshold)
-            .collect::<Vec<f64>>();
-        min_sorted_below.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let next_highest_min = match min_sorted_below.last() {
-            Some(&v) => v,
-            None => 0.0,
-        };
-
-        let mut coalition_sorted_below = coalition_shares
-            .into_iter()
-            .filter(|s| s < &threshold)
-            .collect::<Vec<f64>>();
-        coalition_sorted_below.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let next_highest_coalition = match coalition_sorted_below.last() {
-            Some(&v) => v,
-            None => 0.0,
-        };
-
-        min_count as f64
-            + (0.75 * coalition_no_min_count as f64)
-            + next_highest_min
-            + next_highest_coalition
-    }
-}
-
-fn make_effectiveness(
-    objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
-    let data: Value = serde_json::from_str(objective_config).unwrap();
-
-    let elections = data["elections"].as_object().unwrap();
-    let primaries = elections["primaries"].as_array().unwrap();
-    let generals = elections["generals"].as_array().unwrap();
-    let primary_cutoff = elections["primary_cutoff"].as_u64().unwrap() as usize;
-    let general_cutoff = elections["general_cutoff"].as_u64().unwrap() as usize;
-
-    let primary_pairs: Vec<(String, String)> = primaries.iter().map(|primary| {
-        let pref_col = primary["preferred"].as_str().unwrap().to_owned();
-        let other_col = primary["other"].as_str().unwrap().to_owned();
-        (pref_col, other_col)
-    }).collect();
-    let general_pairs: Vec<(String, String)> = generals.iter().map(|general| {
-        let pref_col = general["preferred"].as_str().unwrap().to_owned();
-        let other_col = general["other"].as_str().unwrap().to_owned();
-        (pref_col, other_col)
-    }).collect();
-
-    let primary_pairs_sh = &*Box::leak(Box::new(primary_pairs));
-    let general_pairs_sh = &*Box::leak(Box::new(general_pairs));
-
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
-        let mut primary_counts = vec![0; partition.num_dists as usize];
-        let mut general_counts = vec![0; partition.num_dists as usize];
-        
-        for (pref_col, other_col) in primary_pairs_sh.iter() {
-            let pref_sums = partition_attr_sums(graph, partition, pref_col);
-            let other_sums = partition_attr_sums(graph, partition, other_col);
-            for (dist, (p, o)) in pref_sums.iter().zip(other_sums.iter()).enumerate() {
-                if p >= o {
-                    general_counts[dist] += 1;
-                }
-            }
-        }
-        for (pref_col, other_col) in general_pairs_sh.iter() {
-            let pref_sums = partition_attr_sums(graph, partition, pref_col);
-            let other_sums = partition_attr_sums(graph, partition, other_col);
-            for (dist, (p, o)) in pref_sums.iter().zip(other_sums.iter()).enumerate() {
-                if p >= o {
-                    general_counts[dist] += 1;
-                }
-            }
-        }
-
-        primary_counts
-            .iter()
-            .zip(general_counts.iter())
-            .map(|(pc, gc)| *pc >= primary_cutoff && *gc >= general_cutoff)
-            .count() as f64
-    }
-}
-
-fn main() {
+fn main() -> Result<()> {
     let cli = App::new("frcw_opt")
-        .version("0.1.1")
+        .version("0.2.0")
         .author("Parker J. Rule <parker.rule@tufts.edu>")
-        .about("An  optimizer for redistricting")
+        .about("Short bursts and parallel tempering optimizers for redistricting")
         .arg(
             Arg::with_name("graph_json")
                 .long("graph-json")
@@ -307,8 +115,7 @@ fn main() {
     let tol = value_t!(matches.value_of("tol"), f64).unwrap_or_else(|e| e.exit());
     let burst_length =
         value_t!(matches.value_of("burst_length"), usize).unwrap_or_else(|e| e.exit());
-    let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap()))
-        .unwrap()
+    let graph_json = fs::canonicalize(PathBuf::from(matches.value_of("graph_json").unwrap()))?
         .into_os_string()
         .into_string()
         .unwrap();
@@ -323,7 +130,6 @@ fn main() {
     let objective_config = matches.value_of("objective").unwrap();
     let obj_data: Value = serde_json::from_str(objective_config).unwrap();
     let obj_type = obj_data["objective"].as_str().unwrap();
-    let objective_fn = make_effectiveness(objective_config);
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
     let optimizer_name = matches.value_of("optimizer").unwrap();
@@ -369,9 +175,7 @@ fn main() {
         "graph_json": graph_json,
     });
     if region_weights.is_some() {
-        meta.as_object_mut()
-            .unwrap()
-            .insert("region_weights".to_string(), json!(region_weights));
+        meta.as_object_mut()?.insert("region_weights".to_string(), json!(region_weights));
     }
     println!("{}", json!({ "meta": meta }).to_string());
 

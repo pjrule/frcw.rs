@@ -1,14 +1,14 @@
 //! Utility functions for loading graph and partition data.
 use crate::graph::{Edge, Graph};
 use crate::partition::Partition;
-use serde_json::Result as SerdeResult;
+use anyhow::{Result, Context}; 
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 
 /// Loads graph and partition data in the NetworkX `adjacency_data` format
 /// used by [GerryChain](https://github.com/mggg/gerrychain). Returns a
-/// [serde_json::Result] containing a [graph::Graph] and
+/// [anyhow:Result] containing a [graph::Graph] and
 /// a [partition::Partition] upon a successful load.
 ///
 /// # Arguments
@@ -24,24 +24,21 @@ pub fn from_networkx(
     pop_col: &str,
     assignment_col: &str,
     columns: Vec<String>,
-) -> SerdeResult<(Graph, Partition)> {
-    let (graph, data) = match graph_from_networkx(path, pop_col, columns) {
-        Ok(v) => v,
-        Err(e) => return Err(e),
-    };
-
-    let raw_nodes = data["nodes"].as_array().unwrap();
+) -> Result<(Graph, Partition)> {
+    let (graph, data) = graph_from_networkx(path, pop_col, columns)?; 
+    let raw_nodes = data["nodes"].as_array()?;
     let assignments: Vec<u32> = raw_nodes
         .iter()
-        .map(|node| node[assignment_col].as_u64().unwrap() as u32)
-        .collect();
-    let partition = Partition::from_assignments(&graph, &assignments).unwrap();
+        .map(|node| node[assignment_col].as_u64())
+        .collect()?
+        .map(|a| a as u32);
+    let partition = Partition::from_assignments(&graph, &assignments)?;
     return Ok((graph, partition));
 }
 
 /// Loads graph data in the NetworkX `adjacency_data` format
 /// used by [GerryChain](https://github.com/mggg/gerrychain). Returns a
-/// [serde_json::Result] containing a [graph::Graph] and the raw
+/// [anyhow:Result] containing a [graph::Graph] and the raw
 /// graph JSON tree upon a successful load.
 ///
 /// # Arguments
@@ -56,11 +53,11 @@ pub fn graph_from_networkx(
     columns: Vec<String>,
 ) -> SerdeResult<(Graph, Value)> {
     // TODO: should load from a generic buffer.
-    let raw = fs::read_to_string(path).expect("Could not load graph");
+    let raw = fs::read_to_string(path).context("Could not load graph")?;
     let data: Value = serde_json::from_str(&raw)?;
 
-    let raw_nodes = data["nodes"].as_array().unwrap();
-    let raw_adj = data["adjacency"].as_array().unwrap();
+    let raw_nodes = data["nodes"].as_array().context("Could not find `nodes`")?;
+    let raw_adj = data["adjacency"].as_array().context("Could not find `adjacency`")?;
     let num_nodes = raw_nodes.len();
     let mut pops = Vec::<u32>::with_capacity(num_nodes);
     let mut neighbors = Vec::<Vec<usize>>::with_capacity(num_nodes);
@@ -74,8 +71,7 @@ pub fn graph_from_networkx(
     for (index, (node, adj)) in raw_nodes.iter().zip(raw_adj.iter()).enumerate() {
         edges_start[index] = edges.len();
         let node_neighbors: Vec<usize> = adj
-            .as_array()
-            .unwrap()
+            .as_array()?
             .into_iter()
             .map(|n| n.as_object().unwrap()["id"].as_u64().unwrap() as usize)
             .collect();
