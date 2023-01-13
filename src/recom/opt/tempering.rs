@@ -237,6 +237,7 @@ impl Optimizer for ParallelTemperingOptimizer {
         let init_score = obj_fn(&graph, &partition);
         let mut best_score = init_score;
         let mut best_partition = partition.clone();
+        let mut best_cut_edges = best_partition.cut_edges(graph).len();
 
         scope(|scope| {
             // Start optimization threads.
@@ -272,22 +273,23 @@ impl Optimizer for ParallelTemperingOptimizer {
                 for _ in 0..n_threads {
                     let packet: OptResultPacket = result_recv.recv().unwrap();
                     last_steps.push((packet.last_partition, packet.last_score, packet.temperature));
-                    if packet.best_partition.is_some() && packet.best_score.unwrap() > best_score {
-                        best_score = packet.best_score.unwrap();
-                        best_partition = packet.best_partition.unwrap();
-                        improved = true;
-                        if self.verbose {
-                            // TODO: remove (use a callback instead).
-                            let min_pops = partition_attr_sums(&graph, &best_partition, "APBVAP20");
-                            let total_pops = partition_attr_sums(&graph, &best_partition, "VAP20");
-                            let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
-                            println!("{}", json!({
-                                "step": step,
-                                "type": "opt",
-                                "score": best_score,
-                                "bvap_maj": seat_count,
-                                "assignment": best_partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
-                            }).to_string());
+                    if let Some(cand_partition) = packet.best_partition {
+                        //let cand_cut_edges = cand_partition.clone().cut_edges(graph).len();
+                        let cand_score = packet.best_score.unwrap();
+                        //if cand_score >= 4.0 && (cand_score > best_score || cand_cut_edges < best_cut_edges || cand_score >= 5.0) {
+                        if cand_score > best_score {
+                            best_score = packet.best_score.unwrap();
+                            best_partition = cand_partition;
+                            // best_cut_edges = cand_cut_edges;
+                            improved = true;
+                            if self.verbose {
+                                println!("{}", json!({
+                                    "step": step,
+                                    "type": "opt",
+                                    "score": best_score,
+                                    "assignment": best_partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
+                                }).to_string());
+                            }
                         }
                     }
                 }
@@ -298,7 +300,6 @@ impl Optimizer for ParallelTemperingOptimizer {
                 }
                 if unimproved_cycles > 1000 {
                     // Aggressive exchange: everyone gets the best plan.
-                    println!("reset...");
                     for (idx, temperature) in self.temps.iter().enumerate() {
                         last_steps[idx] = (best_partition.clone(), best_score, *temperature);
                     }
