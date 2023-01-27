@@ -182,7 +182,7 @@ fn make_effectiveness(
     let primary_pairs_sh = &*Box::leak(Box::new(primary_pairs));
     let general_pairs_sh = &*Box::leak(Box::new(general_pairs));
     let num_primaries = primary_pairs_sh.len() as f64;
-    let num_generals = primary_pairs_sh.len() as f64;
+    let num_generals = general_pairs_sh.len() as f64;
 
     move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let mut primary_counts = vec![0; partition.num_dists as usize];
@@ -258,7 +258,7 @@ fn make_effectiveness_gingles(
     let primary_pairs_sh = &*Box::leak(Box::new(primary_pairs));
     let general_pairs_sh = &*Box::leak(Box::new(general_pairs));
     let num_primaries = primary_pairs_sh.len() as f64;
-    let num_generals = primary_pairs_sh.len() as f64;
+    let num_generals = general_pairs_sh.len() as f64;
 
     let threshold = data["threshold"].as_f64().unwrap();
     assert!(threshold > 0.0 && threshold < 1.0);
@@ -379,7 +379,7 @@ fn make_effectiveness_gingles_two_way(
     let primary_pairs_sh = &*Box::leak(Box::new(primary_pairs));
     let general_pairs_sh = &*Box::leak(Box::new(general_pairs));
     let num_primaries = primary_pairs_sh.len() as f64;
-    let num_generals = primary_pairs_sh.len() as f64;
+    let num_generals = general_pairs_sh.len() as f64;
 
     let threshold = data["threshold"].as_f64().unwrap();
     assert!(threshold > 0.0 && threshold < 1.0);
@@ -502,7 +502,108 @@ fn make_effectiveness_gingles_two_way(
     }
 }
 
+fn make_effectiveness_gingles_intersection(
+    objective_config: &str,
+) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
+    let data: Value = serde_json::from_str(objective_config).unwrap();
 
+    let elections = data["elections"].as_object().unwrap();
+    let primaries = elections["primaries"].as_array().unwrap();
+    let generals = elections["generals"].as_array().unwrap();
+    let primary_cutoff = elections["primary_cutoff"].as_u64().unwrap() as usize;
+    let general_cutoff = elections["general_cutoff"].as_u64().unwrap() as usize;
+
+    let primary_pairs: Vec<(String, String)> = primaries
+        .iter()
+        .map(|primary| {
+            let pref_col = primary["preferred"].as_str().unwrap().to_owned();
+            let other_col = primary["other"].as_str().unwrap().to_owned();
+            (pref_col, other_col)
+        })
+        .collect();
+    let general_pairs: Vec<(String, String)> = generals
+        .iter()
+        .map(|general| {
+            let pref_col = general["preferred"].as_str().unwrap().to_owned();
+            let other_col = general["other"].as_str().unwrap().to_owned();
+            (pref_col, other_col)
+        })
+        .collect();
+
+    let primary_pairs_sh = &*Box::leak(Box::new(primary_pairs));
+    let general_pairs_sh = &*Box::leak(Box::new(general_pairs));
+    let num_primaries = primary_pairs_sh.len() as f64;
+    let num_generals = general_pairs_sh.len() as f64;
+
+    let threshold = data["threshold"].as_f64().unwrap();
+    assert!(threshold > 0.0 && threshold < 1.0);
+
+    // A hack to share strings between threads:
+    // https://stackoverflow.com/a/52367953
+    let min_pop_col = &*Box::leak(
+        data["min_pop"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+            .into_boxed_str(),
+    );
+    let total_pop_col = &*Box::leak(
+        data["total_pop"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+            .into_boxed_str(),
+    );
+
+    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+        let mut primary_counts = vec![0; partition.num_dists as usize];
+        let mut general_counts = vec![0; partition.num_dists as usize];
+
+        for (pref_col, other_col) in primary_pairs_sh.iter() {
+            let pref_sums = partition_attr_sums(graph, partition, pref_col);
+            let other_sums = partition_attr_sums(graph, partition, other_col);
+            for (dist, (p, o)) in pref_sums.iter().zip(other_sums.iter()).enumerate() {
+                if p >= o {
+                    primary_counts[dist] += 1;
+                }
+            }
+        }
+        for (pref_col, other_col) in general_pairs_sh.iter() {
+            let pref_sums = partition_attr_sums(graph, partition, pref_col);
+            let other_sums = partition_attr_sums(graph, partition, other_col);
+            for (dist, (p, o)) in pref_sums.iter().zip(other_sums.iter()).enumerate() {
+                if p >= o {
+                    general_counts[dist] += 1;
+                }
+            }
+        }
+        let min_pops = partition_attr_sums(graph, partition, min_pop_col);
+        let total_pops = partition_attr_sums(graph, partition, total_pop_col);
+        let min_shares: Vec<f64> = min_pops
+            .iter()
+            .zip(total_pops.iter())
+            .map(|(&m, &t)| m as f64 / t as f64)
+            .collect();
+
+        let all_count = primary_counts
+            .iter()
+            .zip(general_counts.iter())
+            .zip(min_shares.iter())
+            .filter(|((pc, gc), ms)| **pc >= primary_cutoff && **gc >= general_cutoff && **ms >= threshold)
+            .count() as f64;
+
+        let mut min_below = min_shares
+            .into_iter()
+            .filter(|s| s < &threshold)
+            .collect::<Vec<f64>>();
+        min_below.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let next_highest = match min_below.last() {
+            Some(&v) => v,
+            None => 0.0,
+        };
+        all_count + next_highest
+    }
+}
 
 fn main() {
     let cli = App::new("frcw_opt")
@@ -625,8 +726,9 @@ fn main() {
         .replace("\\\"", "\"");
     let obj_data: Value = serde_json::from_str(&objective_config).unwrap();
     let obj_type = obj_data["objective"].as_str().unwrap();
-    let objective_fn = make_effectiveness_gingles_two_way(&objective_config);
-    //let objective_fn = make_gingles_partial(&objective_config);
+    //let objective_fn = make_effectiveness_gingles_two_way(&objective_config);
+    let objective_fn = make_gingles_partial(&objective_config);
+    //let objective_fn = make_effectiveness_gingles_intersection(&objective_config);
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
     let optimizer_name = matches.value_of("optimizer").unwrap();

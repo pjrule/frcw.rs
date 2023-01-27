@@ -264,15 +264,10 @@ impl Optimizer for ShortBurstsOptimizer {
                 }
                 step += (self.n_threads * self.burst_length) as u64;
                 if diff.is_some() && self.verbose {
-                    let min_pops = partition_attr_sums(&graph, &partition, "APBVAP20");
-                    let total_pops = partition_attr_sums(&graph, &partition, "VAP20");
-                    let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
-
                     println!("{}", json!({
                         "step": step,
                         "type": "opt",
                         "score": score,
-                        "bvap_maj": seat_count,
                         "assignment": partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
                     }).to_string());
                 }
