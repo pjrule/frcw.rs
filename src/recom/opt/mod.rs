@@ -14,5 +14,7 @@ pub trait Optimizer {
 
 mod short_bursts;
 mod tempering;
+mod verbose_bursts;
 pub use short_bursts::ShortBurstsOptimizer;
 pub use tempering::ParallelTemperingOptimizer;
+pub use verbose_bursts::VerboseBurstsOptimizer;

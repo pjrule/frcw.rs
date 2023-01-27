@@ -8,12 +8,15 @@ use frcw::config::parse_region_weights_config;
 use frcw::graph::Graph;
 use frcw::init::from_networkx;
 use frcw::partition::Partition;
-use frcw::recom::opt::{Optimizer, ParallelTemperingOptimizer, ScoreValue, ShortBurstsOptimizer};
+use frcw::recom::opt::{
+    Optimizer, ParallelTemperingOptimizer, ScoreValue, ShortBurstsOptimizer, VerboseBurstsOptimizer,
+};
 use frcw::recom::{RecomParams, RecomVariant};
 use frcw::stats::partition_attr_sums;
 use serde_json::json;
 use serde_json::Value;
 use sha3::{Digest, Sha3_256};
+use std::collections::HashSet;
 use std::marker::Send;
 use std::path::PathBuf;
 use std::{fs, io};
@@ -347,7 +350,6 @@ fn make_effectiveness_gingles(
     }
 }
 
-
 fn make_effectiveness_gingles_two_way(
     objective_config: &str,
 ) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
@@ -412,7 +414,6 @@ fn make_effectiveness_gingles_two_way(
             .to_owned()
             .into_boxed_str(),
     );
-
 
     move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let mut primary_counts = vec![0; partition.num_dists as usize];
@@ -589,7 +590,9 @@ fn make_effectiveness_gingles_intersection(
             .iter()
             .zip(general_counts.iter())
             .zip(min_shares.iter())
-            .filter(|((pc, gc), ms)| **pc >= primary_cutoff && **gc >= general_cutoff && **ms >= threshold)
+            .filter(|((pc, gc), ms)| {
+                **pc >= primary_cutoff && **gc >= general_cutoff && **ms >= threshold
+            })
             .count() as f64;
 
         let mut min_below = min_shares
@@ -604,6 +607,31 @@ fn make_effectiveness_gingles_intersection(
         all_count + next_highest
     }
 }
+
+
+fn make_neg_piece_count(
+    objective_config: &str,
+) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
+    let data: Value = serde_json::from_str(objective_config).unwrap();
+    let split_col = &*Box::leak(
+        data["split_col"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+            .into_boxed_str(),
+    );
+
+    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+        let labels = graph.attr.get(split_col).unwrap();
+        let mut pieces = HashSet::new();
+        for (node, assignment) in partition.assignments.iter().enumerate() {
+            pieces.insert((labels[node], assignment));
+        }
+        -(pieces.len() as f64)
+    }
+}
+
+
 
 fn main() {
     let cli = App::new("frcw_opt")
@@ -727,7 +755,8 @@ fn main() {
     let obj_data: Value = serde_json::from_str(&objective_config).unwrap();
     let obj_type = obj_data["objective"].as_str().unwrap();
     //let objective_fn = make_effectiveness_gingles_two_way(&objective_config);
-    let objective_fn = make_gingles_partial(&objective_config);
+    //let objective_fn = make_gingles_partial(&objective_config);
+    let objective_fn = make_neg_piece_count(&objective_config);
     //let objective_fn = make_effectiveness_gingles_intersection(&objective_config);
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
@@ -793,6 +822,8 @@ fn main() {
             partition,
             objective_fn,
         );
+    } else if optimizer_name == "verbose_bursts" {
+        VerboseBurstsOptimizer::new(params, burst_length).optimize(&graph, partition, objective_fn);
     } else {
         panic!("Unknown optimizer.");
     }
