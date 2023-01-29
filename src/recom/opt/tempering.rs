@@ -14,6 +14,7 @@ use rand::{Rng, SeedableRng};
 use serde_json::json;
 use std::collections::HashMap;
 use std::marker::Send;
+use std::sync::Arc;
 
 /// A unit of multithreaded work.
 struct OptJobPacket {
@@ -58,7 +59,7 @@ struct OptResultPacket {
 fn start_opt_thread(
     graph: Graph,
     params: RecomParams,
-    obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy,
+    obj_fn: Arc<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Sync>,
     rng_seed: u64,
     buf_size: usize,
     job_recv: Receiver<OptJobPacket>,
@@ -217,7 +218,7 @@ impl Optimizer for ParallelTemperingOptimizer {
         &self,
         graph: &Graph,
         partition: Partition,
-        obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+        obj_fn: Arc<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Sync>,
     ) -> Partition {
         let mut step = 0;
         let node_ub = node_bound(&graph.pops, self.params.max_pop);
@@ -245,12 +246,13 @@ impl Optimizer for ParallelTemperingOptimizer {
                 let rng_seed = self.params.rng_seed + t_idx as u64 + 1;
                 let job_recv = job_recvs[t_idx].clone();
                 let result_send = result_send.clone();
+                let obj_arc = obj_fn.clone();
 
                 scope.spawn(move |_| {
                     start_opt_thread(
                         graph.clone(),
                         self.params.clone(),
-                        obj_fn,
+                        obj_arc,
                         rng_seed,
                         node_ub,
                         job_recv,

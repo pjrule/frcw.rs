@@ -1,5 +1,6 @@
 //! ReCom-based heuristic optimization algorithms.
 use super::{Graph, Partition};
+use std::sync::Arc;
 
 pub type ScoreValue = f64;
 
@@ -8,7 +9,7 @@ pub trait Optimizer {
         &self,
         graph: &Graph,
         partition: Partition,
-        obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+        obj_fn: Arc<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Sync>,
     ) -> Partition;
 }
 

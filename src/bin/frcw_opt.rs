@@ -20,10 +20,12 @@ use std::collections::HashSet;
 use std::marker::Send;
 use std::path::PathBuf;
 use std::{fs, io};
+use std::sync::Arc;
+
 
 fn make_gingles_partial(
     objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
+) -> Arc<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Sync> {
     let data: Value = serde_json::from_str(objective_config).unwrap();
     let threshold = data["threshold"].as_f64().unwrap();
     assert!(threshold > 0.0 && threshold < 1.0);
@@ -45,7 +47,7 @@ fn make_gingles_partial(
             .into_boxed_str(),
     );
 
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+    Arc::new(move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let min_pops = partition_attr_sums(graph, partition, min_pop_col);
         let total_pops = partition_attr_sums(graph, partition, total_pop_col);
         let shares: Vec<f64> = min_pops
@@ -68,12 +70,12 @@ fn make_gingles_partial(
             None => 0.0,
         };
         opportunity_count as f64 + (next_highest / threshold)
-    }
+    })
 }
 
 fn make_gingles_coalition(
     objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
+) -> Arc<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Sync> {
     let data: Value = serde_json::from_str(objective_config).unwrap();
     let threshold = data["threshold"].as_f64().unwrap();
     assert!(threshold > 0.0 && threshold < 1.0);
@@ -102,7 +104,7 @@ fn make_gingles_coalition(
             .into_boxed_str(),
     );
 
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+    Arc::new(move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let min_pops = partition_attr_sums(graph, partition, min_pop_col);
         let total_pops = partition_attr_sums(graph, partition, total_pop_col);
         let coalition_pops = partition_attr_sums(graph, partition, coalition_pop_col);
@@ -151,12 +153,12 @@ fn make_gingles_coalition(
             + (0.75 * coalition_no_min_count as f64)
             + next_highest_min
             + next_highest_coalition
-    }
+    })
 }
 
 fn make_effectiveness(
     objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
+) -> Arc<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Sync> {
     let data: Value = serde_json::from_str(objective_config).unwrap();
 
     let elections = data["elections"].as_object().unwrap();
@@ -187,7 +189,7 @@ fn make_effectiveness(
     let num_primaries = primary_pairs_sh.len() as f64;
     let num_generals = general_pairs_sh.len() as f64;
 
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+    Arc::new(move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let mut primary_counts = vec![0; partition.num_dists as usize];
         let mut general_counts = vec![0; partition.num_dists as usize];
 
@@ -227,12 +229,12 @@ fn make_effectiveness(
             None => 0.0,
         };
         cutoff_count + highest_partial
-    }
+    })
 }
 
 fn make_effectiveness_gingles(
     objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
+) -> Arc<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Sync> {
     let data: Value = serde_json::from_str(objective_config).unwrap();
 
     let elections = data["elections"].as_object().unwrap();
@@ -283,7 +285,7 @@ fn make_effectiveness_gingles(
             .into_boxed_str(),
     );
 
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+    Arc::new(move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let mut primary_counts = vec![0; partition.num_dists as usize];
         let mut general_counts = vec![0; partition.num_dists as usize];
 
@@ -347,165 +349,12 @@ fn make_effectiveness_gingles(
         };
         let gingles_score = opportunity_count as f64 + (next_highest / threshold);
         eff_score + gingles_score
-    }
-}
-
-fn make_effectiveness_gingles_two_way(
-    objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
-    let data: Value = serde_json::from_str(objective_config).unwrap();
-
-    let elections = data["elections"].as_object().unwrap();
-    let primaries = elections["primaries"].as_array().unwrap();
-    let generals = elections["generals"].as_array().unwrap();
-    let primary_cutoff = elections["primary_cutoff"].as_u64().unwrap() as usize;
-    let general_cutoff = elections["general_cutoff"].as_u64().unwrap() as usize;
-
-    let primary_pairs: Vec<(String, String)> = primaries
-        .iter()
-        .map(|primary| {
-            let pref_col = primary["preferred"].as_str().unwrap().to_owned();
-            let other_col = primary["other"].as_str().unwrap().to_owned();
-            (pref_col, other_col)
-        })
-        .collect();
-    let general_pairs: Vec<(String, String)> = generals
-        .iter()
-        .map(|general| {
-            let pref_col = general["preferred"].as_str().unwrap().to_owned();
-            let other_col = general["other"].as_str().unwrap().to_owned();
-            (pref_col, other_col)
-        })
-        .collect();
-
-    let primary_pairs_sh = &*Box::leak(Box::new(primary_pairs));
-    let general_pairs_sh = &*Box::leak(Box::new(general_pairs));
-    let num_primaries = primary_pairs_sh.len() as f64;
-    let num_generals = general_pairs_sh.len() as f64;
-
-    let threshold = data["threshold"].as_f64().unwrap();
-    assert!(threshold > 0.0 && threshold < 1.0);
-
-    let min_pop1_col = &*Box::leak(
-        data["min_pop1"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-            .into_boxed_str(),
-    );
-    let total_pop1_col = &*Box::leak(
-        data["total_pop1"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-            .into_boxed_str(),
-    );
-    let min_pop2_col = &*Box::leak(
-        data["min_pop2"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-            .into_boxed_str(),
-    );
-    let total_pop2_col = &*Box::leak(
-        data["total_pop2"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-            .into_boxed_str(),
-    );
-
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
-        let mut primary_counts = vec![0; partition.num_dists as usize];
-        let mut general_counts = vec![0; partition.num_dists as usize];
-
-        for (pref_col, other_col) in primary_pairs_sh.iter() {
-            let pref_sums = partition_attr_sums(graph, partition, pref_col);
-            let other_sums = partition_attr_sums(graph, partition, other_col);
-            for (dist, (p, o)) in pref_sums.iter().zip(other_sums.iter()).enumerate() {
-                if p >= o {
-                    primary_counts[dist] += 1;
-                }
-            }
-        }
-        for (pref_col, other_col) in general_pairs_sh.iter() {
-            let pref_sums = partition_attr_sums(graph, partition, pref_col);
-            let other_sums = partition_attr_sums(graph, partition, other_col);
-            for (dist, (p, o)) in pref_sums.iter().zip(other_sums.iter()).enumerate() {
-                if p >= o {
-                    general_counts[dist] += 1;
-                }
-            }
-        }
-
-        let cutoff_count = primary_counts
-            .iter()
-            .zip(general_counts.iter())
-            .filter(|(pc, gc)| **pc >= primary_cutoff && **gc >= general_cutoff)
-            .count() as f64;
-        let mut partials: Vec<f64> = primary_counts
-            .iter()
-            .zip(general_counts.iter())
-            .filter(|(pc, gc)| **pc < primary_cutoff || **gc < general_cutoff)
-            .map(|(pc, gc)| (*pc as f64 / num_primaries) * (*gc as f64 / num_generals))
-            .collect();
-        partials.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let highest_partial = match partials.last() {
-            Some(&v) => v,
-            None => 0.0,
-        };
-        let eff_score = cutoff_count + highest_partial;
-
-        let min_pops1 = partition_attr_sums(graph, partition, min_pop1_col);
-        let total_pops1 = partition_attr_sums(graph, partition, total_pop1_col);
-        let shares: Vec<f64> = min_pops1
-            .iter()
-            .zip(total_pops1.iter())
-            .map(|(&m, &t)| m as f64 / t as f64)
-            .collect();
-        let opportunity_count1 = shares.iter().filter(|&s| s >= &threshold).count();
-
-        // partial ordering on f64:
-        // see https://www.reddit.com/r/rust/comments/29kia3/no_ord_for_f32/
-        // see https://doc.rust-lang.org/std/vec/struct.Vec.html#method.sort_by
-        let mut sorted_below1 = shares
-            .into_iter()
-            .filter(|s| s < &threshold)
-            .collect::<Vec<f64>>();
-        sorted_below1.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let next_highest1 = match sorted_below1.last() {
-            Some(&v) => v,
-            None => 0.0,
-        };
-        let gingles1_score = opportunity_count1 as f64 + (next_highest1 / threshold);
-
-        let min_pops2 = partition_attr_sums(graph, partition, min_pop2_col);
-        let total_pops2 = partition_attr_sums(graph, partition, total_pop2_col);
-        let shares: Vec<f64> = min_pops2
-            .iter()
-            .zip(total_pops2.iter())
-            .map(|(&m, &t)| m as f64 / t as f64)
-            .collect();
-        let opportunity_count2 = shares.iter().filter(|&s| s >= &threshold).count();
-
-        let mut sorted_below2 = shares
-            .into_iter()
-            .filter(|s| s < &threshold)
-            .collect::<Vec<f64>>();
-        sorted_below2.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let next_highest2 = match sorted_below2.last() {
-            Some(&v) => v,
-            None => 0.0,
-        };
-        let gingles2_score = opportunity_count2 as f64 + (next_highest2 / threshold);
-
-        eff_score + gingles1_score + gingles2_score
-    }
+    })
 }
 
 fn make_effectiveness_gingles_intersection(
     objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
+) -> Arc<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Sync> {
     let data: Value = serde_json::from_str(objective_config).unwrap();
 
     let elections = data["elections"].as_object().unwrap();
@@ -533,8 +382,6 @@ fn make_effectiveness_gingles_intersection(
 
     let primary_pairs_sh = &*Box::leak(Box::new(primary_pairs));
     let general_pairs_sh = &*Box::leak(Box::new(general_pairs));
-    let num_primaries = primary_pairs_sh.len() as f64;
-    let num_generals = general_pairs_sh.len() as f64;
 
     let threshold = data["threshold"].as_f64().unwrap();
     assert!(threshold > 0.0 && threshold < 1.0);
@@ -556,7 +403,7 @@ fn make_effectiveness_gingles_intersection(
             .into_boxed_str(),
     );
 
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+    Arc::new(move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let mut primary_counts = vec![0; partition.num_dists as usize];
         let mut general_counts = vec![0; partition.num_dists as usize];
 
@@ -605,13 +452,13 @@ fn make_effectiveness_gingles_intersection(
             None => 0.0,
         };
         all_count + next_highest
-    }
+    })
 }
 
 
 fn make_neg_piece_count(
     objective_config: &str,
-) -> impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy {
+) -> Arc<dyn Fn(&Graph, &Partition) -> ScoreValue + Send + Sync> {
     let data: Value = serde_json::from_str(objective_config).unwrap();
     let split_col = &*Box::leak(
         data["split_col"]
@@ -621,14 +468,14 @@ fn make_neg_piece_count(
             .into_boxed_str(),
     );
 
-    move |graph: &Graph, partition: &Partition| -> ScoreValue {
+    Arc::new(move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let labels = graph.attr.get(split_col).unwrap();
         let mut pieces = HashSet::new();
         for (node, assignment) in partition.assignments.iter().enumerate() {
             pieces.insert((labels[node], assignment));
         }
         -(pieces.len() as f64)
-    }
+    })
 }
 
 
@@ -754,9 +601,15 @@ fn main() {
         .replace("\\\"", "\"");
     let obj_data: Value = serde_json::from_str(&objective_config).unwrap();
     let obj_type = obj_data["objective"].as_str().unwrap();
-    //let objective_fn = make_effectiveness_gingles_two_way(&objective_config);
-    //let objective_fn = make_gingles_partial(&objective_config);
-    let objective_fn = make_neg_piece_count(&objective_config);
+    let objective_fn = match obj_type {
+        "gingles_partial" => make_gingles_partial(&objective_config),
+        "gingles_coalition" => make_gingles_coalition(&objective_config),
+        "effectiveness" => make_effectiveness(&objective_config),
+        "effectiveness_gingles_union" => make_effectiveness_gingles(&objective_config),
+        "effectiveness_gingles_intersection" => make_effectiveness_gingles_intersection(&objective_config),
+        "neg_piece_count" => make_neg_piece_count(&objective_config),
+        _ => panic!("Unknown objective.")
+    };
     //let objective_fn = make_effectiveness_gingles_intersection(&objective_config);
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
