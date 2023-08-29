@@ -9,6 +9,7 @@ pub trait Optimizer {
         graph: &Graph,
         partition: Partition,
         obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+        accept_fn: Option<String>,
     ) -> Partition;
 }
 

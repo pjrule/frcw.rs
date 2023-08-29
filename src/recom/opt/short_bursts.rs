@@ -13,6 +13,7 @@ use crate::graph::Graph;
 use crate::partition::Partition;
 use crate::spanning_tree::{RMSTSampler, RegionAwareSampler, SpanningTreeSampler};
 use crate::stats::partition_attr_sums;
+use anyhow::{Context, Result};
 use crossbeam::scope;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use rand::rngs::SmallRng;
@@ -60,11 +61,12 @@ fn start_opt_thread(
     mut partition: Partition,
     params: RecomParams,
     obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy,
+    _accept_fn: Option<String>,
     rng_seed: u64,
     buf_size: usize,
     job_recv: Receiver<OptJobPacket>,
     result_send: Sender<OptResultPacket>,
-) {
+) -> Result<()> {
     // TODO: consider supporting other ReCom variants.
     // We generally don't (or can't) care about distributional
     // properties, so it would make little sense to support reversible
@@ -80,7 +82,10 @@ fn start_opt_thread(
     if params.variant == RecomVariant::DistrictPairsRegionAware {
         st_sampler = Box::new(RegionAwareSampler::new(
             buf_size,
-            params.region_weights.clone().unwrap(),
+            params
+                .region_weights
+                .clone()
+                .context("No region weights available in region-aware mode")?,
         ));
     } else if params.variant == RecomVariant::DistrictPairsRMST {
         st_sampler = Box::new(RMSTSampler::new(buf_size));
@@ -88,11 +93,11 @@ fn start_opt_thread(
         panic!("ReCom variant not supported by optimizer.");
     }
 
-    let mut next: OptJobPacket = job_recv.recv().unwrap();
+    let mut next: OptJobPacket = job_recv.recv()?;
     let mut start_partition = partition.clone();
     while !next.terminate {
-        if next.diff.is_some() {
-            start_partition = next.diff.unwrap();
+        if let Some(cand_partition) = next.diff {
+            start_partition = cand_partition;
         }
         partition = start_partition.clone();
 
@@ -107,7 +112,7 @@ fn start_opt_thread(
             if dist_pair.is_none() {
                 continue;
             }
-            let (dist_a, dist_b) = dist_pair.unwrap();
+            let (dist_a, dist_b) = dist_pair.context("Expected district pair")?;
             partition.subgraph_with_attr(&graph, &mut subgraph_buf, dist_a, dist_b);
             st_sampler.random_spanning_tree(&subgraph_buf.graph, &mut st_buf, &mut rng);
             let split = random_split(
@@ -143,29 +148,36 @@ fn start_opt_thread(
                 best_score: None,
             },
         };
-        result_send.send(result).unwrap();
-        next = job_recv.recv().unwrap();
+        result_send.send(result)?;
+        next = job_recv
+            .recv()
+            .context("Could not receive next job packet")?;
     }
+    Ok(())
 }
 
 /// Sends a batch of work to a ReCom optimization thread.
-fn next_batch(send: &Sender<OptJobPacket>, diff: Option<Partition>, burst_length: usize) {
+fn next_batch(
+    send: &Sender<OptJobPacket>,
+    diff: Option<Partition>,
+    burst_length: usize,
+) -> Result<()> {
     send.send(OptJobPacket {
         n_steps: burst_length,
         diff: diff,
         terminate: false,
-    })
-    .unwrap();
+    })?;
+    Ok(())
 }
 
 /// Stops a ReCom optimization thread.
-fn stop_opt_thread(send: &Sender<OptJobPacket>) {
+fn stop_opt_thread(send: &Sender<OptJobPacket>) -> Result<()> {
     send.send(OptJobPacket {
         n_steps: 0,
         diff: None,
         terminate: true,
-    })
-    .unwrap();
+    })?;
+    Ok(())
 }
 
 pub struct ShortBurstsOptimizer {
@@ -208,6 +220,7 @@ impl Optimizer for ShortBurstsOptimizer {
         graph: &Graph,
         mut partition: Partition,
         obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+        _accept_fn: Option<String>
     ) -> Partition {
         let mut step = 0;
         let node_ub = node_bound(&graph.pops, self.params.max_pop);
@@ -238,29 +251,33 @@ impl Optimizer for ShortBurstsOptimizer {
                         partition,
                         self.params.clone(),
                         obj_fn,
+                        None,  // TODO: accept_fn.clone(),
                         rng_seed,
                         node_ub,
                         job_recv,
                         result_send,
-                    );
+                    ).unwrap();
                 });
             }
 
             if self.params.num_steps > 0 {
                 for job in job_sends.iter() {
-                    next_batch(job, None, self.burst_length);
+                    next_batch(job, None, self.burst_length).unwrap();
                 }
             }
 
             while step <= self.params.num_steps {
                 let mut diff = None;
                 for _ in 0..self.n_threads {
-                    let packet: OptResultPacket = result_recv.recv().unwrap();
-                    if packet.best_partition.is_some() && packet.best_score.unwrap() >= score {
-                        partition = packet.best_partition.unwrap();
-                        score = packet.best_score.unwrap();
-                        diff = Some(partition.clone());
+                    let packet: OptResultPacket = result_recv.recv().unwrap();  // TODO: un-unwrap
+                    if let Some(cand_partition) = packet.best_partition {
+                        if let Some(cand_score) = packet.best_score {
+                            partition = cand_partition;
+                            score = cand_score;
+                            diff = Some(partition.clone());
+                        }
                     }
+
                 }
                 step += (self.n_threads * self.burst_length) as u64;
                 if diff.is_some() && self.verbose {
@@ -278,13 +295,13 @@ impl Optimizer for ShortBurstsOptimizer {
                 }
 
                 for job in job_sends.iter() {
-                    next_batch(job, diff.clone(), self.burst_length);
+                    next_batch(job, diff.clone(), self.burst_length).unwrap();
                 }
             }
 
             // Terminate worker threads.
             for job in job_sends.iter() {
-                stop_opt_thread(job);
+                stop_opt_thread(job).unwrap();
             }
             partition
         })

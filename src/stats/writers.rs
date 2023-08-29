@@ -76,11 +76,6 @@ pub struct JSONLWriter {
 /// Writes sum statistics and assignments in JSONL format (two lines per partition).
 pub struct JSONLTwoLineWriter {}
 
-/// Hack.
-pub struct GeorgiaWriter {
-    best_count: Option<usize>,
-}
-
 impl TSVWriter {
     pub fn new() -> TSVWriter {
         TSVWriter {}
@@ -158,12 +153,6 @@ impl JSONLTwoLineWriter {
     }
 }
 
-impl GeorgiaWriter {
-    pub fn new() -> GeorgiaWriter {
-        GeorgiaWriter { best_count: None }
-    }
-}
-
 impl StatsWriter for TSVWriter {
     fn init(&mut self, _graph: &Graph, _partition: &Partition) -> Result<()> {
         // TSV column header.
@@ -224,39 +213,6 @@ impl StatsWriter for JSONLTwoLineWriter {
             json!({ "sums": partition_sums(graph, partition) }).to_string()
         );
         println!("{{\"assignments\": {:?}}}", partition.assignments);
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl StatsWriter for GeorgiaWriter {
-    fn init(&mut self, _graph: &Graph, _partition: &Partition) -> Result<()> {
-        Ok(())
-    }
-
-    fn step(
-        &mut self,
-        step: u64,
-        graph: &Graph,
-        partition: &Partition,
-        _proposal: &RecomProposal,
-        _counts: &SelfLoopCounts,
-    ) -> Result<()> {
-        let sums = partition_sums(graph, partition);
-        let dist_vaps = sums["VAP20"].clone();
-        let dist_apbvaps = sums["APBVAP20"].clone();
-        let maj_min_count = dist_vaps
-            .iter()
-            .zip(dist_apbvaps.iter())
-            .filter(|(&v, &a)| 2 * a >= v)
-            .count();
-        if maj_min_count > self.best_count.unwrap_or(0) {
-            println!("{}\t{}\t{:?}", maj_min_count, step, partition.assignments);
-            self.best_count = Some(maj_min_count);
-        }
         Ok(())
     }
 

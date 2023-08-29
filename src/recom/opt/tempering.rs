@@ -8,8 +8,10 @@ use crate::graph::Graph;
 use crate::partition::Partition;
 use crate::spanning_tree::{RMSTSampler, RegionAwareSampler, SpanningTreeSampler};
 use crate::stats::partition_attr_sums;
+use anyhow::{Context, Result};
 use crossbeam::scope;
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use rhai::{Engine, EvalAltResult};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use serde_json::json;
@@ -60,11 +62,12 @@ fn start_opt_thread(
     graph: Graph,
     params: RecomParams,
     obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Copy,
+    accept_fn: Option<String>,
     rng_seed: u64,
     buf_size: usize,
     job_recv: Receiver<OptJobPacket>,
     result_send: Sender<OptResultPacket>,
-) {
+) -> Result<()> {
     let n = graph.pops.len();
     let mut rng: SmallRng = SeedableRng::seed_from_u64(rng_seed);
     let mut subgraph_buf = SubgraphBuffer::new(n, buf_size);
@@ -75,7 +78,10 @@ fn start_opt_thread(
     if params.variant == RecomVariant::DistrictPairsRegionAware {
         st_sampler = Box::new(RegionAwareSampler::new(
             buf_size,
-            params.region_weights.clone().unwrap(),
+            params
+                .region_weights
+                .clone()
+                .context("No region weights available in region-aware mode")?,
         ));
     } else if params.variant == RecomVariant::DistrictPairsRMST {
         st_sampler = Box::new(RMSTSampler::new(buf_size));
@@ -83,9 +89,17 @@ fn start_opt_thread(
         panic!("ReCom variant not supported by optimizer.");
     }
 
-    let mut next: OptJobPacket = job_recv.recv().unwrap();
+    let mut engine = Engine::new();
+    engine.register_type_with_name::<Graph>("Graph")
+          .register_type_with_name::<Partition>("Partition");
+          
+    
+
+    let mut next: OptJobPacket = job_recv.recv()?;
     while !next.terminate {
-        let mut partition = next.start.unwrap();
+        let mut partition = next
+            .start
+            .context("No seed partition available for batch")?;
 
         let mut best_partition: Option<Partition> = None;
         let mut score = obj_fn(&graph, &partition);
@@ -98,7 +112,7 @@ fn start_opt_thread(
             if dist_pair.is_none() {
                 continue;
             }
-            let (dist_a, dist_b) = dist_pair.unwrap();
+            let (dist_a, dist_b) = dist_pair.context("Expected district pair")?;
             partition.subgraph_with_attr(&graph, &mut subgraph_buf, dist_a, dist_b);
             st_sampler.random_spanning_tree(&subgraph_buf.graph, &mut st_buf, &mut rng);
             let split = random_split(
@@ -151,31 +165,39 @@ fn start_opt_thread(
                 temperature: next.temperature,
             },
         };
-        result_send.send(result).unwrap();
-        next = job_recv.recv().unwrap();
+        result_send.send(result)?;
+        next = job_recv
+            .recv()
+            .context("Could not receive next job packet")?;
     }
+    Ok(())
 }
 
 /// Sends a batch of work to a ReCom optimization thread.
-fn next_batch(send: &Sender<OptJobPacket>, n_steps: usize, start: Partition, temperature: f64) {
+fn next_batch(
+    send: &Sender<OptJobPacket>,
+    n_steps: usize,
+    start: Partition,
+    temperature: f64,
+) -> Result<()> {
     send.send(OptJobPacket {
         n_steps: n_steps,
         start: Some(start),
         temperature: temperature,
         terminate: false,
-    })
-    .unwrap();
+    })?;
+    Ok(())
 }
 
 /// Stops a ReCom optimization thread.
-fn stop_opt_thread(send: &Sender<OptJobPacket>) {
+fn stop_opt_thread(send: &Sender<OptJobPacket>) -> Result<()> {
     send.send(OptJobPacket {
         n_steps: 0,
         start: None,
         temperature: 0.0,
         terminate: true,
-    })
-    .unwrap();
+    })?;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -219,6 +241,7 @@ impl Optimizer for ParallelTemperingOptimizer {
         graph: &Graph,
         partition: Partition,
         obj_fn: impl Fn(&Graph, &Partition) -> ScoreValue + Send + Clone + Copy,
+        accept_fn: Option<String>
     ) -> Partition {
         let mut step = 0;
         let node_ub = node_bound(&graph.pops, self.params.max_pop);
@@ -245,23 +268,25 @@ impl Optimizer for ParallelTemperingOptimizer {
                 let rng_seed = self.params.rng_seed + t_idx as u64 + 1;
                 let job_recv = job_recvs[t_idx].clone();
                 let result_send = result_send.clone();
+                let acc = accept_fn.clone();
 
                 scope.spawn(move |_| {
                     start_opt_thread(
                         graph.clone(),
                         self.params.clone(),
                         obj_fn,
+                        acc,
                         rng_seed,
                         node_ub,
                         job_recv,
                         result_send
-                    );
+                    ).unwrap();
                 });
             }
 
             if self.params.num_steps > 0 {
                 for (job, temperature) in job_sends.iter().zip(self.temps.iter()) {
-                    next_batch(job, self.steps_per_swap, partition.clone(), *temperature);
+                    next_batch(job, self.steps_per_swap, partition.clone(), *temperature).unwrap();
                 }
             }
 
@@ -270,24 +295,28 @@ impl Optimizer for ParallelTemperingOptimizer {
                 let mut last_steps = vec![];
                 let mut improved = false;
                 for _ in 0..n_threads {
-                    let packet: OptResultPacket = result_recv.recv().unwrap();
+                    let packet: OptResultPacket = result_recv.recv().unwrap(); //.context("Could not fetch results from queue")?;
                     last_steps.push((packet.last_partition, packet.last_score, packet.temperature));
-                    if packet.best_partition.is_some() && packet.best_score.unwrap() > best_score {
-                        best_score = packet.best_score.unwrap();
-                        best_partition = packet.best_partition.unwrap();
-                        improved = true;
-                        if self.verbose {
-                            // TODO: remove (use a callback instead).
-                            let min_pops = partition_attr_sums(&graph, &best_partition, "APBVAP20");
-                            let total_pops = partition_attr_sums(&graph, &best_partition, "VAP20");
-                            let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
-                            println!("{}", json!({
-                                "step": step,
-                                "type": "opt",
-                                "score": best_score,
-                                "bvap_maj": seat_count,
-                                "assignment": best_partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
-                            }).to_string());
+                    if let Some(cand_partition) = packet.best_partition {
+                        if let Some(cand_score) = packet.best_score {
+                            if cand_score > best_score {
+                                best_score = cand_score;
+                                best_partition = cand_partition;
+                                improved = true;
+                                if self.verbose {
+                                    // TODO: remove (use a callback instead).
+                                    let min_pops = partition_attr_sums(&graph, &best_partition, "APBVAP20");
+                                    let total_pops = partition_attr_sums(&graph, &best_partition, "VAP20");
+                                    let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
+                                    println!("{}", json!({
+                                        "step": step,
+                                        "type": "opt",
+                                        "score": best_score,
+                                        "bvap_maj": seat_count,
+                                        "assignment": best_partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
+                                    }).to_string());
+                                }
+                            }
                         }
                     }
                 }
@@ -298,7 +327,6 @@ impl Optimizer for ParallelTemperingOptimizer {
                 }
                 if unimproved_cycles > 1000 {
                     // Aggressive exchange: everyone gets the best plan.
-                    println!("reset...");
                     for (idx, temperature) in self.temps.iter().enumerate() {
                         last_steps[idx] = (best_partition.clone(), best_score, *temperature);
                     }
@@ -319,16 +347,15 @@ impl Optimizer for ParallelTemperingOptimizer {
                 }
 
                 for (job, (partition, _, temperature)) in job_sends.iter().zip(last_steps.iter()) {
-                    next_batch(job, self.steps_per_swap, partition.clone(), *temperature);
+                    next_batch(job, self.steps_per_swap, partition.clone(), *temperature).unwrap();
                 }
             }
 
             // Terminate worker threads.
             for job in job_sends.iter() {
-                stop_opt_thread(job);
+                stop_opt_thread(job).unwrap();
             }
             best_partition
-        })
-        .unwrap()
+        }).unwrap()
     }
 }

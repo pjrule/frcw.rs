@@ -1,7 +1,7 @@
 //! Utility functions for loading graph and partition data.
 use crate::graph::{Edge, Graph};
 use crate::partition::Partition;
-use anyhow::{Result, Context}; 
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -25,13 +25,16 @@ pub fn from_networkx(
     assignment_col: &str,
     columns: Vec<String>,
 ) -> Result<(Graph, Partition)> {
-    let (graph, data) = graph_from_networkx(path, pop_col, columns)?; 
-    let raw_nodes = data["nodes"].as_array()?;
+    let (graph, data) = graph_from_networkx(path, pop_col, columns)?;
+    let raw_nodes = data["nodes"].as_array().context("Expected `nodes` array")?;
     let assignments: Vec<u32> = raw_nodes
         .iter()
         .map(|node| node[assignment_col].as_u64())
-        .collect()?
-        .map(|a| a as u32);
+        .collect::<Option<Vec<u64>>>()
+        .context("Expected integer node labels")?
+        .iter()
+        .map(|a| *a as u32)
+        .collect();
     let partition = Partition::from_assignments(&graph, &assignments)?;
     return Ok((graph, partition));
 }
@@ -51,13 +54,15 @@ pub fn graph_from_networkx(
     path: &str,
     pop_col: &str,
     columns: Vec<String>,
-) -> SerdeResult<(Graph, Value)> {
+) -> Result<(Graph, Value)> {
     // TODO: should load from a generic buffer.
     let raw = fs::read_to_string(path).context("Could not load graph")?;
     let data: Value = serde_json::from_str(&raw)?;
 
     let raw_nodes = data["nodes"].as_array().context("Could not find `nodes`")?;
-    let raw_adj = data["adjacency"].as_array().context("Could not find `adjacency`")?;
+    let raw_adj = data["adjacency"]
+        .as_array()
+        .context("Could not find `adjacency`")?;
     let num_nodes = raw_nodes.len();
     let mut pops = Vec::<u32>::with_capacity(num_nodes);
     let mut neighbors = Vec::<Vec<usize>>::with_capacity(num_nodes);
@@ -71,7 +76,8 @@ pub fn graph_from_networkx(
     for (index, (node, adj)) in raw_nodes.iter().zip(raw_adj.iter()).enumerate() {
         edges_start[index] = edges.len();
         let node_neighbors: Vec<usize> = adj
-            .as_array()?
+            .as_array()
+            .context("Expected adjacency list")?
             .into_iter()
             .map(|n| n.as_object().unwrap()["id"].as_u64().unwrap() as usize)
             .collect();
