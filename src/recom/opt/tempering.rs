@@ -305,14 +305,17 @@ impl Optimizer for ParallelTemperingOptimizer {
                                 improved = true;
                                 if self.verbose {
                                     // TODO: remove (use a callback instead).
-                                    let min_pops = partition_attr_sums(&graph, &best_partition, "APBVAP20");
-                                    let total_pops = partition_attr_sums(&graph, &best_partition, "VAP20");
-                                    let seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
+                                    let min_pops = partition_attr_sums(&graph, &best_partition, "scaled_discounted_NHAPBCVAP20");
+                                    let coalition_pops = partition_attr_sums(&graph, &best_partition, "scaled_discounted_coalition_cvap");
+                                    let total_pops = partition_attr_sums(&graph, &best_partition, "scaled_discounted_CVAP");
+                                    let min_seat_count = min_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
+                                    let coalition_seat_count = coalition_pops.iter().zip(total_pops.iter()).filter(|(&m, &t)| 2 * m >= t).count();
                                     println!("{}", json!({
                                         "step": step,
                                         "type": "opt",
                                         "score": best_score,
-                                        "bvap_maj": seat_count,
+                                        "min_maj": min_seat_count,
+                                        "coalition_maj": coalition_seat_count,
                                         "assignment": best_partition.assignments.clone().into_iter().enumerate().collect::<HashMap<usize, u32>>()
                                     }).to_string());
                                 }

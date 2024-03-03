@@ -99,6 +99,25 @@ fn make_gingles_coalition(
             .to_owned()
             .into_boxed_str(),
     );
+    let coalition_constraint_col = &*Box::leak(
+        data["coalition_constraint"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+            .into_boxed_str(),
+    );
+    let coalition_constraint_threshold = data["coalition_constraint_threshold"].as_f64().unwrap_or(0.08);
+    let min_weight = data["min_weight"].as_f64().unwrap_or(1.0);
+    let coalition_weight = data["coalition_weight"]
+            .as_f64()
+            .unwrap_or(0.75);
+    /*
+    let interpolate = &*Box::leak(
+        data["interpolate"]
+            .as_bool()
+            .unwrap_or_else(false)
+    );
+    */
 
     move |graph: &Graph, partition: &Partition| -> ScoreValue {
         let min_pops = partition_attr_sums(graph, partition, min_pop_col);
@@ -116,11 +135,27 @@ fn make_gingles_coalition(
             .collect();
 
         let min_count = min_shares.iter().filter(|&s| s >= &threshold).count();
-        let coalition_no_min_count = min_shares
-            .iter()
-            .zip(coalition_shares.iter())
-            .filter(|(&ms, &cs)| ms < threshold && cs >= threshold)
-            .count();
+
+        let coalition_no_min_count = if coalition_constraint_threshold > 0.0 {
+            let coalition_constraint_pops = partition_attr_sums(graph, partition, coalition_constraint_col);
+            let coalition_constraint_shares: Vec<f64> = coalition_constraint_pops
+                .iter()
+                .zip(total_pops.iter())
+                .map(|(&c, &t)| c as f64 / t as f64)
+                .collect();
+            min_shares
+                .iter()
+                .zip(coalition_shares.iter())
+                .zip(coalition_constraint_shares.iter())
+                .filter(|((&ms, &cs), &ccs)| ms < threshold && cs >= threshold && ccs >= coalition_constraint_threshold)
+                .count()
+        } else {
+            min_shares
+                .iter()
+                .zip(coalition_shares.iter())
+                .filter(|(&ms, &cs)| ms < threshold && cs >= threshold)
+                .count()
+        };
 
         // partial ordering on f64:
         // see https://www.reddit.com/r/rust/comments/29kia3/no_ord_for_f32/
@@ -145,12 +180,13 @@ fn make_gingles_coalition(
             None => 0.0,
         };
 
-        min_count as f64
-            + (0.75 * coalition_no_min_count as f64)
+        (min_weight * (min_count as f64))
+            + (coalition_weight * (coalition_no_min_count as f64))
             + next_highest_min
             + next_highest_coalition
     }
 }
+
 
 fn make_effectiveness(
     objective_config: &str,
@@ -328,7 +364,7 @@ fn main() -> Result<()> {
         .collect();
 
     let objective_config = matches.value_of("objective").unwrap();
-    let objective_fn = make_effectiveness(objective_config);
+    let objective_fn = make_gingles_coalition(objective_config);
     let region_weights_raw = matches.value_of("region_weights").unwrap_or_default();
     let region_weights = parse_region_weights_config(region_weights_raw);
     let optimizer_name = matches.value_of("optimizer").unwrap();
